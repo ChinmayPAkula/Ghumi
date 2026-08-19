@@ -13,11 +13,27 @@ auditable.
 from __future__ import annotations
 
 from typing import Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator, model_validator
+
+VALID_STYLES = {
+    "hidden_gems",
+    "popular",
+    "relaxed",
+    "adventurous",
+    "cultural",
+    "food_focused",
+}
 
 
 class UserInput(BaseModel):
-    """Written by: input_handler (Phase 1)."""
+    """
+    Written by: input_handler (Phase 1).
+
+    Validation lives here as Pydantic field_validators rather than separate
+    validate_*() functions — FastAPI turns a raised ValueError into a 422
+    with {loc, msg} per field automatically, which the frontend maps
+    straight onto the failing form field (red border + inline message).
+    """
 
     destination: Optional[str] = None       # None + surprise_me=True if unset
     surprise_me: bool = False
@@ -26,6 +42,45 @@ class UserInput(BaseModel):
     duration_days: int
     priorities_raw: str = ""                # free text, e.g. "I care more about food"
     style: Optional[str] = None              # hidden_gems / popular / relaxed / adventurous / cultural / food_focused
+
+    @field_validator("destination")
+    @classmethod
+    def normalize_destination(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        v = v.strip()
+        if not v:
+            return None
+        return v.title()
+
+    @field_validator("budget_total")
+    @classmethod
+    def budget_must_be_positive(cls, v: float) -> float:
+        if v <= 0:
+            raise ValueError("Budget must be greater than 0")
+        return v
+
+    @field_validator("duration_days")
+    @classmethod
+    def duration_within_range(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError("Trip must be at least 1 day")
+        if v > 30:
+            raise ValueError("Trip can't be longer than 30 days")
+        return v
+
+    @field_validator("style")
+    @classmethod
+    def style_must_be_known(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None and v not in VALID_STYLES:
+            raise ValueError(f"Style must be one of: {', '.join(sorted(VALID_STYLES))}")
+        return v
+
+    @model_validator(mode="after")
+    def destination_or_surprise_me(self) -> "UserInput":
+        if not self.destination and not self.surprise_me:
+            raise ValueError("Choose a destination or turn on Surprise me")
+        return self
 
 
 class Candidate(BaseModel):
