@@ -1,0 +1,358 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Ghumi — Design Spec v3 Simulation</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,300;9..144,500;9..144,600&family=General+Sans:wght@400;500&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --paper:#F6F4EF;
+    --ink:#16241F;
+    --brand:#1F5C4A;
+    --dusk:#16332B;
+    --brass:#C98A3B;
+    --route:#A83E32;
+    --line:#D8D3C4;
+    --muted:#6B7570;
+  }
+  *{box-sizing:border-box;margin:0;padding:0;}
+  html{scroll-behavior:smooth;}
+  body{
+    background:var(--paper);
+    color:var(--ink);
+    font-family:'General Sans', sans-serif;
+    overflow-x:hidden;
+  }
+  .note{
+    position:fixed; top:14px; right:14px; z-index:50;
+    background:rgba(22,36,31,0.9); color:var(--paper);
+    font-family:'IBM Plex Mono', monospace; font-size:10.5px;
+    padding:8px 12px; border-radius:6px; max-width:220px; line-height:1.5;
+    letter-spacing:0.02em;
+  }
+  .note b{color:var(--brass);}
+
+  /* ---------- HERO ---------- */
+  .hero{
+    position:relative;
+    height:100vh;
+    display:flex; flex-direction:column; align-items:center; justify-content:center;
+    background:
+      radial-gradient(ellipse at 30% 20%, rgba(201,138,59,0.18), transparent 55%),
+      linear-gradient(180deg, #2c463c 0%, #1e3a30 45%, var(--dusk) 100%);
+    overflow:hidden;
+  }
+  .hero::before{
+    /* simulated photo texture: soft fog bands to stand in for real photography, graded toward dusk */
+    content:'';
+    position:absolute; inset:0;
+    background:
+      radial-gradient(circle at 80% 70%, rgba(255,255,255,0.05), transparent 40%),
+      repeating-linear-gradient(115deg, rgba(255,255,255,0.025) 0px, rgba(255,255,255,0.025) 2px, transparent 2px, transparent 90px);
+    mix-blend-mode:screen;
+  }
+  .hero::after{
+    /* dark overlay gradient: transparent at top -> dusk at bottom, per spec */
+    content:'';
+    position:absolute; inset:0;
+    background:linear-gradient(180deg, rgba(22,51,43,0) 0%, rgba(22,51,43,0.55) 65%, var(--dusk) 100%);
+  }
+  .ghost-headline{
+    position:relative; z-index:2;
+    font-family:'Fraunces', serif;
+    font-weight:600;
+    font-size:clamp(64px, 13vw, 190px);
+    letter-spacing:-0.03em;
+    line-height:0.88;
+    text-align:center;
+    color:#F6F4EF;
+    text-shadow:
+      0 1px 0 rgba(255,255,255,0.4),
+      0 2px 0 rgba(0,0,0,0.15),
+      0 6px 0 rgba(22,51,43,0.5),
+      0 14px 24px rgba(0,0,0,0.55),
+      0 30px 60px rgba(0,0,0,0.4);
+  }
+  .hero-sub{
+    position:relative; z-index:2;
+    font-family:'Fraunces', serif;
+    font-style:italic;
+    font-weight:300;
+    font-size:15px;
+    letter-spacing:0.01em;
+    color:rgba(246,244,239,0.65);
+    margin-top:14px;
+  }
+
+  /* glass boarding-pass card */
+  .glass-card{
+    position:relative; z-index:2;
+    margin-top:46px;
+    width:min(360px, 84vw);
+    padding:22px 24px;
+    border-radius:18px;
+    background:rgba(31,92,74,0.55); /* brand at ~60% opacity */
+    backdrop-filter:blur(18px);
+    -webkit-backdrop-filter:blur(18px);
+    border:1px solid rgba(246,244,239,0.18);
+    box-shadow:0 24px 60px rgba(0,0,0,0.35);
+  }
+  .bp-row{display:flex; justify-content:space-between; align-items:baseline;}
+  .bp-city{font-family:'Fraunces', serif; font-size:26px; color:var(--paper);}
+  .bp-code{font-family:'IBM Plex Mono', monospace; font-size:11px; color:rgba(246,244,239,0.7); letter-spacing:0.08em;}
+  .bp-route-icon{color:var(--brass); font-size:15px; align-self:center;}
+  .bp-divider{
+    margin:16px 0; height:1px;
+    background:repeating-linear-gradient(90deg, rgba(246,244,239,0.35) 0 6px, transparent 6px 12px);
+  }
+  .bp-fields{display:flex;}
+  .bp-field{flex:1; min-width:0; margin-right:18px;}
+  .bp-field:last-child{margin-right:0;}
+  .bp-field label{display:block; font-family:'IBM Plex Mono', monospace; font-size:9px; letter-spacing:0.1em; color:rgba(246,244,239,0.55); text-transform:uppercase; margin-bottom:4px; white-space:nowrap;}
+  .bp-field span{font-family:'IBM Plex Mono', monospace; font-size:13px; color:var(--paper); white-space:nowrap;}
+
+  .scroll-cue{
+    position:absolute; bottom:28px; left:50%; transform:translateX(-50%);
+    font-family:'IBM Plex Mono', monospace; font-size:10px; letter-spacing:0.15em;
+    color:rgba(246,244,239,0.6); z-index:2; text-transform:uppercase;
+  }
+
+  /* ---------- TRANSITION BAND ---------- */
+  .transition{
+    position:relative;
+    height:34vh;
+    background:linear-gradient(180deg, var(--dusk) 0%, var(--dusk) 40%, var(--paper) 100%);
+    display:flex; align-items:flex-start; justify-content:center;
+    overflow:hidden;
+  }
+  .transition svg{position:absolute; top:0; left:50%; transform:translateX(-50%); height:100%; width:2px;}
+  .agent-text{
+    position:absolute; top:6%; left:50%; transform:translateX(-50%);
+    font-family:'IBM Plex Mono', monospace; font-size:11px; letter-spacing:0.12em;
+    color:rgba(246,244,239,0.85); white-space:nowrap;
+    opacity:0; transition:opacity 0.6s ease;
+  }
+  .agent-text.show{opacity:1;}
+  .agent-text .arrow{color:var(--brass); margin:0 6px;}
+
+  .plane{
+    position:absolute; left:50%; top:0;
+    width:20px; height:20px;
+    display:flex; align-items:center; justify-content:center;
+    font-size:16px; color:#F6F4EF;
+    transform:translate(-50%, -50%) rotate(90deg);
+    transform-origin:center center;
+    text-shadow:0 2px 6px rgba(0,0,0,0.4);
+    will-change:transform, opacity;
+    transition:opacity 0.4s ease;
+    z-index:3;
+  }
+  .plane.takeoff{
+    transition:transform 0.9s cubic-bezier(0.55,0.02,0.2,1), opacity 0.9s ease 0.2s;
+    transform:translate(calc(-50% + 90px), calc(-50% - 100px)) rotate(35deg) scale(1.6);
+    opacity:0;
+  }
+
+  /* ---------- HOW IT WORKS ---------- */
+  .how{
+    background:var(--paper);
+    padding:40px 24px 100px;
+    position:relative;
+  }
+  .how-inner{max-width:760px; margin:0 auto; position:relative;}
+  .how-eyebrow{font-family:'IBM Plex Mono', monospace; font-size:11px; letter-spacing:0.15em; color:var(--brass); text-transform:uppercase; text-align:center; display:block; margin-bottom:6px;}
+  .how h2{font-family:'Fraunces', serif; font-weight:500; font-size:clamp(28px,4vw,40px); text-align:center; margin-bottom:56px; color:var(--ink);}
+
+  .agent-row{
+    display:grid; grid-template-columns:repeat(3,1fr); gap:0;
+    position:relative;
+  }
+  .agent-row::before{
+    /* the connective route line -- literally the line drawn during transition */
+    content:''; position:absolute; top:34px; left:16.6%; right:16.6%; height:2px;
+    background-image:repeating-linear-gradient(90deg, var(--route) 0 8px, transparent 8px 16px);
+  }
+  .agent-card{position:relative; text-align:center; padding:0 16px;}
+  .agent-dot{
+    width:12px; height:12px; border-radius:50%; background:var(--route);
+    margin:28px auto 18px; position:relative; z-index:1;
+    box-shadow:0 0 0 6px var(--paper);
+  }
+  .agent-card h3{font-family:'IBM Plex Mono', monospace; font-size:12px; letter-spacing:0.08em; text-transform:uppercase; color:var(--ink); margin-bottom:8px;}
+  .agent-card p{font-size:13.5px; color:var(--muted); line-height:1.5;}
+
+  /* ---------- DASHBOARD PREVIEW ---------- */
+  .dash{
+    background:var(--paper);
+    border-top:1px solid var(--line);
+    padding:70px 24px 110px;
+  }
+  .dash-inner{max-width:520px; margin:0 auto;}
+  .dash h2{font-family:'Fraunces', serif; font-weight:500; font-size:26px; margin-bottom:6px;}
+  .dash p.sub{color:var(--muted); font-size:14px; margin-bottom:36px;}
+
+  .stub-card{
+    display:flex; background:#fff; border:1px solid var(--line); border-radius:14px;
+    margin-bottom:16px; overflow:hidden; box-shadow:0 1px 2px rgba(22,36,31,0.04);
+  }
+  .stub-main{flex:1; padding:18px 20px;}
+  .stub-top{display:flex; justify-content:space-between; align-items:baseline; margin-bottom:10px;}
+  .stub-main h4{font-family:'Fraunces', serif; font-size:19px;}
+  .stub-main .tag{font-family:'IBM Plex Mono', monospace; font-size:9px; letter-spacing:0.08em; text-transform:uppercase; color:var(--brand); background:rgba(31,92,74,0.09); padding:3px 8px; border-radius:20px;}
+  .stub-meta{display:flex; gap:22px;}
+  .stub-meta div label{display:block; font-family:'IBM Plex Mono', monospace; font-size:8.5px; color:var(--muted); text-transform:uppercase; letter-spacing:0.08em; margin-bottom:3px;}
+  .stub-meta div span{font-family:'IBM Plex Mono', monospace; font-size:12.5px; color:var(--ink);}
+  .stub-perf{
+    width:56px; border-left:1px dashed var(--line);
+    display:flex; align-items:center; justify-content:center;
+    background:repeating-radial-gradient(circle at 0 50%, transparent 0 2px, transparent 2px);
+    position:relative;
+  }
+  .stub-perf::before, .stub-perf::after{
+    content:''; position:absolute; width:14px; height:14px; background:var(--paper); border-radius:50%;
+    left:-7px;
+  }
+  .stub-perf::before{top:-7px;}
+  .stub-perf::after{bottom:-7px;}
+  .stub-perf span{writing-mode:vertical-rl; font-family:'IBM Plex Mono', monospace; font-size:9px; letter-spacing:0.1em; color:var(--brass); text-transform:uppercase;}
+
+  footer{
+    text-align:center; padding:40px 20px 60px; color:var(--muted);
+    font-family:'IBM Plex Mono', monospace; font-size:10.5px; letter-spacing:0.05em;
+  }
+</style>
+</head>
+<body>
+
+<div class="note"><b>Simulation only</b> — real photography, exact motion easing, and true glass blur will differ in build. Scroll slowly to watch the transition band draw.</div>
+
+<section class="hero">
+  <h1 class="ghost-headline">Ghumi</h1>
+  <div class="hero-sub">a trip, worked out for you</div>
+
+  <div class="glass-card">
+    <div class="bp-row">
+      <span class="bp-city">BLR</span>
+      <span class="bp-route-icon">✈</span>
+      <span class="bp-city">HND</span>
+    </div>
+    <div class="bp-divider"></div>
+    <div class="bp-fields">
+      <div class="bp-field"><label>Traveler</label><span>A. Rao</span></div>
+      <div class="bp-field"><label>Dates</label><span>12–19 Mar</span></div>
+      <div class="bp-field"><label>Status</label><span>Planning</span></div>
+    </div>
+  </div>
+
+  <div class="scroll-cue">scroll ↓</div>
+</section>
+
+<section class="transition" id="transitionBand">
+  <svg viewBox="0 0 2 200" preserveAspectRatio="none">
+    <line id="routeLine" x1="1" y1="0" x2="1" y2="200" stroke="#F6F4EF" stroke-width="2"
+          stroke-dasharray="6 6" stroke-dashoffset="200" />
+  </svg>
+  <div class="agent-text" id="agentText">
+    BUDGET AGENT<span class="arrow">→</span>SEARCH AGENT<span class="arrow">→</span>RANKING AGENT
+  </div>
+  <div class="plane" id="plane">✈</div>
+</section>
+
+<section class="how">
+  <div class="how-inner">
+    <span class="how-eyebrow">How it works</span>
+    <h2>Three agents, one itinerary</h2>
+    <div class="agent-row">
+      <div class="agent-card">
+        <div class="agent-dot"></div>
+        <h3>Budget Agent</h3>
+        <p>Reads your budget and dates, sets constraints for everything downstream.</p>
+      </div>
+      <div class="agent-card">
+        <div class="agent-dot"></div>
+        <h3>Search Agent</h3>
+        <p>Finds flights and stays that fit, ranked by fit rather than price alone.</p>
+      </div>
+      <div class="agent-card">
+        <div class="agent-dot"></div>
+        <h3>Ranking Agent</h3>
+        <p>Assembles the shortlist into a single boarding-pass itinerary.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="dash">
+  <div class="dash-inner">
+    <h2>Your trips</h2>
+    <p class="sub">Flat, paper background — no photography past the hero.</p>
+
+    <div class="stub-card">
+      <div class="stub-main">
+        <div class="stub-top">
+          <h4>Tokyo, spring</h4>
+          <span class="tag">Booked</span>
+        </div>
+        <div class="stub-meta">
+          <div><label>Dates</label><span>12–19 Mar</span></div>
+          <div><label>Route</label><span>BLR → HND</span></div>
+          <div><label>Budget</label><span>₹1.4L</span></div>
+        </div>
+      </div>
+      <div class="stub-perf"><span>GHUMI</span></div>
+    </div>
+
+    <div class="stub-card">
+      <div class="stub-main">
+        <div class="stub-top">
+          <h4>Ladakh, monsoon</h4>
+          <span class="tag">Planning</span>
+        </div>
+        <div class="stub-meta">
+          <div><label>Dates</label><span>4–10 Jul</span></div>
+          <div><label>Route</label><span>BLR → IXL</span></div>
+          <div><label>Budget</label><span>₹60K</span></div>
+        </div>
+      </div>
+      <div class="stub-perf"><span>GHUMI</span></div>
+    </div>
+  </div>
+</section>
+
+<footer>GHUMI — DESIGN SPEC V3 — SIMULATION BUILD</footer>
+
+<script>
+  const band = document.getElementById('transitionBand');
+  const line = document.getElementById('routeLine');
+  const text = document.getElementById('agentText');
+  const plane = document.getElementById('plane');
+
+  const TAKEOFF_AT = 0.9; // progress threshold where the plane leaves the line
+
+  function onScroll(){
+    const rect = band.getBoundingClientRect();
+    const vh = window.innerHeight;
+    // progress: 0 when band top hits bottom of viewport, 1 when band bottom hits top
+    let progress = (vh - rect.top) / (vh + rect.height);
+    progress = Math.max(0, Math.min(1, progress));
+    const offset = 200 - (progress * 200);
+    line.setAttribute('stroke-dashoffset', offset);
+    if(progress > 0.15){ text.classList.add('show'); } else { text.classList.remove('show'); }
+
+    if(progress >= TAKEOFF_AT){
+      plane.classList.add('takeoff');
+    } else {
+      plane.classList.remove('takeoff');
+      // ride the drawn portion of the line, capped just before takeoff
+      const rideProgress = Math.min(progress / TAKEOFF_AT, 1);
+      plane.style.top = (rideProgress * 92) + '%';
+      plane.style.opacity = progress > 0.05 ? 1 : 0;
+    }
+  }
+  document.addEventListener('scroll', onScroll);
+  onScroll();
+</script>
+
+</body>
+</html>

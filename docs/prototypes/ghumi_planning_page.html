@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Ghumi — Plan a trip</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,300;9..144,500;9..144,600&family=General+Sans:wght@400;500&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --paper:#F6F4EF;
+    --ink:#16241F;
+    --brand:#1F5C4A;
+    --dusk:#16332B;
+    --brass:#C98A3B;
+    --route:#A83E32;
+    --line:#D8D3C4;
+    --muted:#6B7570;
+  }
+  *{box-sizing:border-box;margin:0;padding:0;}
+  body{
+    background:var(--paper);
+    color:var(--ink);
+    font-family:'General Sans', sans-serif;
+  }
+
+  /* ---------- HEADER ---------- */
+  header{
+    position:relative;
+    padding:22px 32px 70px;
+    background:
+      radial-gradient(ellipse at 20% 0%, rgba(201,138,59,0.14), transparent 55%),
+      linear-gradient(180deg, #244a3d 0%, #1c3c31 55%, var(--dusk) 100%);
+    overflow:hidden;
+  }
+  header::before{
+    content:'';
+    position:absolute; inset:0;
+    background:repeating-linear-gradient(115deg, rgba(255,255,255,0.02) 0px, rgba(255,255,255,0.02) 2px, transparent 2px, transparent 90px);
+    mix-blend-mode:screen;
+  }
+  .nav{position:relative; z-index:2; display:flex; justify-content:space-between; align-items:center;}
+  .wordmark{
+    font-family:'Fraunces', serif; font-weight:600; font-size:22px; color:var(--paper);
+    letter-spacing:-0.01em;
+  }
+  .wordmark .dot{color:var(--brass);}
+  .nav-right{display:flex; align-items:center; gap:18px;}
+  .nav-right span{font-family:'IBM Plex Mono', monospace; font-size:11px; letter-spacing:0.08em; color:rgba(246,244,239,0.6); text-transform:uppercase;}
+  .avatar{width:30px; height:30px; border-radius:50%; background:var(--brass); display:flex; align-items:center; justify-content:center; font-family:'IBM Plex Mono', monospace; font-size:11px; color:var(--dusk); font-weight:500;}
+
+  .header-title{
+    position:relative; z-index:2;
+    margin-top:54px;
+    font-family:'Fraunces', serif; font-weight:600;
+    font-size:clamp(34px,5vw,52px);
+    color:#F6F4EF;
+    letter-spacing:-0.02em;
+    text-shadow:
+      0 1px 0 rgba(255,255,255,0.35),
+      0 2px 0 rgba(0,0,0,0.15),
+      0 5px 0 rgba(22,51,43,0.5),
+      0 12px 22px rgba(0,0,0,0.5);
+  }
+  .header-sub{
+    position:relative; z-index:2;
+    font-family:'Fraunces', serif; font-style:italic; font-weight:300;
+    font-size:15px; color:rgba(246,244,239,0.65); margin-top:8px;
+  }
+
+  /* ---------- BODY: split layout ---------- */
+  main{
+    max-width:1120px; margin:-40px auto 0; padding:0 24px 80px;
+    position:relative; z-index:3;
+    display:grid; grid-template-columns:1.15fr 0.85fr; gap:22px;
+  }
+  @media (max-width:860px){ main{ grid-template-columns:1fr; } }
+
+  .panel{
+    background:#fff; border:1px solid var(--line); border-radius:18px;
+    box-shadow:0 20px 50px rgba(22,36,31,0.08);
+    overflow:hidden;
+  }
+
+  /* --- left: itinerary builder --- */
+  .panel-header{
+    padding:20px 24px; border-bottom:1px solid var(--line);
+    display:flex; justify-content:space-between; align-items:center;
+  }
+  .panel-header h2{font-family:'Fraunces', serif; font-size:19px; font-weight:500;}
+  .panel-header .status{
+    font-family:'IBM Plex Mono', monospace; font-size:9.5px; letter-spacing:0.08em; text-transform:uppercase;
+    background:rgba(31,92,74,0.09); color:var(--brand); padding:4px 10px; border-radius:20px;
+  }
+
+  .builder{padding:24px;}
+  .field-row{display:flex; gap:14px; margin-bottom:14px;}
+  .field{flex:1;}
+  .field label{display:block; font-family:'IBM Plex Mono', monospace; font-size:9.5px; letter-spacing:0.08em; text-transform:uppercase; color:var(--muted); margin-bottom:6px;}
+  .field .val{
+    border:1px solid var(--line); border-radius:10px; padding:11px 13px;
+    font-family:'IBM Plex Mono', monospace; font-size:13.5px; color:var(--ink);
+    background:var(--paper);
+  }
+  .field .val.placeholder{color:var(--muted); font-style:italic; font-family:'General Sans', sans-serif;}
+
+  .route-visual{
+    display:flex; align-items:center; gap:10px; margin:26px 0 30px;
+  }
+  .route-visual .city{font-family:'Fraunces', serif; font-size:22px;}
+  .route-visual .line{
+    flex:1; height:1px;
+    background-image:repeating-linear-gradient(90deg, var(--route) 0 7px, transparent 7px 14px);
+    position:relative;
+  }
+  .route-visual .line::after{content:'✈'; position:absolute; right:0; top:-9px; color:var(--route); font-size:13px;}
+
+  .builder h3.sec{font-family:'IBM Plex Mono', monospace; font-size:10.5px; letter-spacing:0.1em; text-transform:uppercase; color:var(--muted); margin:10px 0 12px;}
+  .option-card{
+    border:1px solid var(--line); border-radius:12px; padding:14px 16px; margin-bottom:10px;
+    display:flex; justify-content:space-between; align-items:center;
+    transition:border-color 0.2s;
+  }
+  .option-card.selected{border-color:var(--brand); background:rgba(31,92,74,0.04);}
+  .option-card .oc-left h4{font-family:'Fraunces', serif; font-size:15.5px; margin-bottom:3px;}
+  .option-card .oc-left p{font-size:12px; color:var(--muted);}
+  .option-card .oc-price{font-family:'IBM Plex Mono', monospace; font-size:13px; color:var(--ink); text-align:right;}
+  .option-card .oc-price small{display:block; font-size:9px; color:var(--muted); text-transform:uppercase; letter-spacing:0.06em; margin-top:2px;}
+  .check{
+    width:16px; height:16px; border-radius:50%; background:var(--brand); display:inline-flex;
+    align-items:center; justify-content:center; color:#fff; font-size:10px; margin-right:8px;
+  }
+
+  /* --- right: chat panel --- */
+  .chat{display:flex; flex-direction:column; height:100%;}
+  .chat-header{
+    padding:18px 22px; border-bottom:1px solid var(--line);
+    display:flex; align-items:center; gap:10px;
+  }
+  .chat-header .dot-live{width:7px; height:7px; border-radius:50%; background:var(--brass); box-shadow:0 0 0 3px rgba(201,138,59,0.2);}
+  .chat-header span{font-family:'IBM Plex Mono', monospace; font-size:10.5px; letter-spacing:0.08em; text-transform:uppercase; color:var(--muted);}
+
+  .chat-body{padding:22px; display:flex; flex-direction:column; gap:16px; flex:1;}
+
+  .msg{max-width:88%; font-size:13.5px; line-height:1.5;}
+  .msg.agent{align-self:flex-start;}
+  .msg.user{align-self:flex-end;}
+
+  .agent-label{
+    font-family:'IBM Plex Mono', monospace; font-size:9px; letter-spacing:0.1em; text-transform:uppercase;
+    color:var(--brass); margin-bottom:5px; display:flex; align-items:center; gap:6px;
+  }
+  .agent-label::before{content:''; width:5px; height:5px; border-radius:50%; background:var(--route);}
+  .bubble{
+    padding:11px 14px; border-radius:14px;
+  }
+  .msg.agent .bubble{background:var(--paper); border:1px solid var(--line); border-top-left-radius:4px; color:var(--ink);}
+  .msg.user .bubble{background:var(--brand); color:var(--paper); border-top-right-radius:4px;}
+
+  .chat-input{
+    border-top:1px solid var(--line); padding:16px 18px; display:flex; gap:10px; align-items:center;
+  }
+  .chat-input .box{
+    flex:1; border:1px solid var(--line); border-radius:22px; padding:11px 16px;
+    font-family:'General Sans', sans-serif; font-size:13px; color:var(--muted); background:var(--paper);
+  }
+  .chat-input .send{
+    width:36px; height:36px; border-radius:50%; background:var(--brand); color:#fff;
+    display:flex; align-items:center; justify-content:center; font-size:14px; flex-shrink:0;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="nav">
+    <div class="wordmark">Ghumi<span class="dot">.</span></div>
+    <div class="nav-right">
+      <span>Trip · Tokyo</span>
+      <div class="avatar">AR</div>
+    </div>
+  </div>
+  <div class="header-title">Plan your Tokyo trip</div>
+  <div class="header-sub">the agents are already working on it</div>
+</header>
+
+<main>
+  <!-- LEFT: itinerary builder -->
+  <div class="panel">
+    <div class="panel-header">
+      <h2>Itinerary</h2>
+      <span class="status">Draft</span>
+    </div>
+    <div class="builder">
+      <div class="field-row">
+        <div class="field">
+          <label>Dates</label>
+          <div class="val">12 – 19 Mar</div>
+        </div>
+        <div class="field">
+          <label>Budget</label>
+          <div class="val">₹1,40,000</div>
+        </div>
+      </div>
+
+      <div class="route-visual">
+        <span class="city">BLR</span>
+        <div class="line"></div>
+        <span class="city">HND</span>
+      </div>
+
+      <h3 class="sec">Search agent — flight options</h3>
+      <div class="option-card selected">
+        <div class="oc-left">
+          <h4><span class="check">✓</span>IndiGo · Nonstop</h4>
+          <p>Departs 06:40 · Arrives 15:10 · 8h 30m</p>
+        </div>
+        <div class="oc-price">₹38,400<small>round trip</small></div>
+      </div>
+      <div class="option-card">
+        <div class="oc-left">
+          <h4>ANA · 1 stop</h4>
+          <p>Departs 09:15 · Arrives 21:40 · 12h 25m</p>
+        </div>
+        <div class="oc-price">₹31,200<small>round trip</small></div>
+      </div>
+
+      <h3 class="sec">Ranking agent — stay</h3>
+      <div class="option-card selected">
+        <div class="oc-left">
+          <h4><span class="check">✓</span>Shinjuku Gracery</h4>
+          <p>0.4km from station · rated for solo/business travel</p>
+        </div>
+        <div class="oc-price">₹9,600<small>per night</small></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- RIGHT: chat panel -->
+  <div class="panel chat">
+    <div class="chat-header">
+      <div class="dot-live"></div>
+      <span>Planning session</span>
+    </div>
+    <div class="chat-body">
+      <div class="msg agent">
+        <div class="agent-label">Budget Agent</div>
+        <div class="bubble">Set your budget at ₹1.4L. That leaves roughly ₹85K after flights — plenty of room for a mid-range stay.</div>
+      </div>
+      <div class="msg user">
+        <div class="bubble">Can we stay closer to Shinjuku station?</div>
+      </div>
+      <div class="msg agent">
+        <div class="agent-label">Search Agent</div>
+        <div class="bubble">Found 6 options within 500m. Shinjuku Gracery is closest and fits your budget — added it to the itinerary.</div>
+      </div>
+      <div class="msg agent">
+        <div class="agent-label">Ranking Agent</div>
+        <div class="bubble">Updated your itinerary on the left. Want me to lock in the IndiGo nonstop too?</div>
+      </div>
+      <div class="msg user">
+        <div class="bubble">Yes, lock it in.</div>
+      </div>
+    </div>
+    <div class="chat-input">
+      <div class="box">Ask the agents anything…</div>
+      <div class="send">↑</div>
+    </div>
+  </div>
+</main>
+
+</body>
+</html>

@@ -1,0 +1,33 @@
+# --- API framework ---
+fastapi
+uvicorn[standard]
+
+# --- Agent orchestration ---
+langgraph
+langchain
+langchain-groq
+
+# --- Schema/validation ---
+pydantic>=2
+pydantic-settings
+
+# --- Database / Auth ---
+supabase
+psycopg2-binary
+sqlalchemy
+
+# --- Observability ---
+langsmith
+sentry-sdk[fastapi]
+
+# --- Env ---
+python-dotenv
+
+# --- External APIs ---
+amadeus
+googlemaps
+
+# --- Testing ---
+pytest
+pytest-asyncio
+httpx

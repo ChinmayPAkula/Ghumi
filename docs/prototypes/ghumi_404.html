@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Ghumi — Page not found</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,300;9..144,500;9..144,600&family=General+Sans:wght@400;500&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --paper:#F6F4EF;
+    --ink:#16241F;
+    --brand:#1F5C4A;
+    --dusk:#16332B;
+    --brass:#C98A3B;
+    --route:#A83E32;
+    --line:#D8D3C4;
+    --muted:#6B7570;
+  }
+  *{box-sizing:border-box;margin:0;padding:0;}
+  html,body{height:100%;}
+  body{
+    font-family:'General Sans', sans-serif;
+    color:var(--ink);
+    background:
+      radial-gradient(ellipse at 22% 15%, rgba(201,138,59,0.14), transparent 55%),
+      linear-gradient(180deg, #24493c 0%, #1c3c31 45%, var(--dusk) 100%);
+    min-height:100%;
+    display:flex; align-items:center; justify-content:center;
+    padding:32px;
+    position:relative;
+    overflow:hidden;
+  }
+  body::before{
+    content:'';
+    position:absolute; inset:0;
+    background:repeating-linear-gradient(115deg, rgba(255,255,255,0.02) 0px, rgba(255,255,255,0.02) 2px, transparent 2px, transparent 90px);
+    mix-blend-mode:screen;
+  }
+
+  .wordmark{
+    position:absolute; top:28px; left:32px; z-index:2;
+    font-family:'Fraunces', serif; font-weight:600; font-size:19px; color:var(--paper);
+  }
+  .wordmark .dot{color:var(--brass);}
+
+  .stage{
+    position:relative; z-index:2;
+    display:flex; flex-direction:column; align-items:center;
+    text-align:center;
+    max-width:460px;
+  }
+
+  .code{
+    font-family:'Fraunces', serif; font-weight:600;
+    font-size:clamp(90px,16vw,150px);
+    line-height:0.85;
+    color:#F6F4EF;
+    letter-spacing:-0.02em;
+    text-shadow:
+      0 1px 0 rgba(255,255,255,0.35),
+      0 2px 0 rgba(0,0,0,0.15),
+      0 6px 0 rgba(22,51,43,0.5),
+      0 14px 24px rgba(0,0,0,0.55),
+      0 30px 60px rgba(0,0,0,0.4);
+  }
+
+  /* broken route line with a stranded plane */
+  .route{
+    display:flex; align-items:center; gap:8px;
+    margin:28px 0 22px;
+    width:100%;
+  }
+  .route .city{font-family:'IBM Plex Mono', monospace; font-size:11px; letter-spacing:0.08em; color:rgba(246,244,239,0.55);}
+  .route .stub{
+    flex:1; height:1px; position:relative;
+    background-image:repeating-linear-gradient(90deg, var(--route) 0 7px, transparent 7px 14px);
+  }
+  .route .stub.left{margin-right:2px;}
+  .route .stub.right{
+    background-image:repeating-linear-gradient(90deg, rgba(168,62,50,0.25) 0 7px, transparent 7px 14px);
+  }
+  .route .plane{
+    font-size:15px; color:var(--brass); transform:rotate(90deg); flex-shrink:0;
+    text-shadow:0 2px 6px rgba(0,0,0,0.4);
+  }
+
+  .headline{
+    font-family:'Fraunces', serif; font-weight:500; font-size:22px; color:var(--paper);
+    margin-bottom:8px;
+  }
+  .sub{
+    font-family:'Fraunces', serif; font-style:italic; font-weight:300; font-size:14.5px;
+    color:rgba(246,244,239,0.6); margin-bottom:34px; line-height:1.5;
+  }
+
+  .actions{display:flex; gap:12px; flex-wrap:wrap; justify-content:center;}
+  .btn{
+    font-family:'IBM Plex Mono', monospace; font-size:11.5px; letter-spacing:0.06em; text-transform:uppercase;
+    padding:12px 22px; border-radius:30px; text-decoration:none; display:inline-block;
+    transition:transform 0.15s ease;
+  }
+  .btn:hover{transform:translateY(-1px);}
+  .btn.primary{background:var(--brand); color:var(--paper);}
+  .btn.ghost{border:1px solid rgba(246,244,239,0.3); color:var(--paper);}
+
+  .footer-note{
+    position:absolute; bottom:26px; left:0; right:0; z-index:2;
+    text-align:center;
+    font-family:'IBM Plex Mono', monospace; font-size:10px; letter-spacing:0.1em; text-transform:uppercase;
+    color:rgba(246,244,239,0.35);
+  }
+</style>
+</head>
+<body>
+
+<div class="wordmark">Ghumi<span class="dot">.</span></div>
+
+<div class="stage">
+  <div class="code">404</div>
+
+  <div class="route">
+    <span class="city">HERE</span>
+    <div class="stub left"></div>
+    <div class="plane">✈</div>
+    <div class="stub right"></div>
+    <span class="city">THERE</span>
+  </div>
+
+  <div class="headline">This route doesn't exist</div>
+  <div class="sub">the page you were looking for got rerouted, cancelled, or never had a gate to begin with.</div>
+
+  <div class="actions">
+    <a href="#" class="btn primary">Back to Ghumi</a>
+    <a href="#" class="btn ghost">Report this</a>
+  </div>
+</div>
+
+<div class="footer-note">Error 404 — Not Found</div>
+
+</body>
+</html>
