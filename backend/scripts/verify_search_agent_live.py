@@ -1,11 +1,16 @@
 """
-Run this manually to sanity-check search_agent against the REAL Amadeus
-(test env) and Google Places APIs — this is NOT part of the pytest suite
-(pytest tests mock both SDKs on purpose, see tests/test_search_agent.py).
+Run this manually to sanity-check search_agent against the REAL Duffel
+(flights), Hotelbeds (hotels), and Google Places APIs — this is NOT part
+of the pytest suite (pytest tests mock all three on purpose, see
+tests/test_search_agent.py).
 
 Requires in your .env:
-    AMADEUS_CLIENT_ID / AMADEUS_CLIENT_SECRET  (Amadeus self-service "test" app)
+    DUFFEL_API_KEY          (Duffel sandbox/test access token)
+    HOTELBEDS_API_KEY / HOTELBEDS_API_SECRET  (Hotelbeds test environment)
     GOOGLE_PLACES_API_KEY
+
+Amadeus is not used — its self-service/test tier was decommissioned
+2026-07-17 (Enterprise API only now, not viable for this project).
 
 Not runnable yet — no live keys exist as of this commit (see PRD §7.3).
 Once keys are added to .env, run from backend/:

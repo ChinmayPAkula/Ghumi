@@ -17,18 +17,26 @@ Responsibilities:
          recorded with concrete resolution options for the orchestrator's
          (not yet built) clarification interrupt to surface to the user
 
-Amadeus/Google Places' official SDKs are synchronous. Every SDK call is
-run via asyncio.to_thread so the category searches still overlap from
-FastAPI's async event loop's perspective instead of blocking it.
+Providers:
+  - Flights: Duffel (REST, Bearer token) — replaces Amadeus, whose
+    self-service/test tier was decommissioned 2026-07-17.
+  - Hotels: Hotelbeds (REST, Api-key + SHA-256 X-Signature) — same reason.
+  - Food/activities: Google Places SDK (unaffected, still official/sync).
+
+Duffel and Hotelbeds are called directly over HTTP via httpx.AsyncClient
+(no official/blocking SDK involved, so no thread-pool wrapping needed).
+The Google Places SDK is synchronous, so its calls are run via
+asyncio.to_thread so they don't block the event loop.
 """
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import time
 from typing import Optional
 
 import googlemaps
-from amadeus import Client as AmadeusClient
-from amadeus import ResponseError as AmadeusResponseError
+import httpx
 
 from app.agents.budget_agent import allocate_budget
 from app.core.config import get_settings
@@ -44,43 +52,80 @@ REALLOCATABLE_CATEGORIES = (HOTELS, FOOD, ACTIVITIES)
 RESOLUTION_OPTIONS = ["increase_budget", "compromise_equally", "compromise_specific"]
 
 
-def _get_amadeus_client() -> AmadeusClient:
-    """Isolated so tests can monkeypatch this instead of mocking the SDK's internals."""
-    settings = get_settings()
-    return AmadeusClient(
-        client_id=settings.amadeus_client_id,
-        client_secret=settings.amadeus_client_secret,
-    )
-
-
 def _get_places_client() -> googlemaps.Client:
     settings = get_settings()
     return googlemaps.Client(key=settings.google_places_api_key)
 
 
+def _hotelbeds_signature(api_key: str, secret: str) -> str:
+    timestamp = str(int(time.time()))
+    return hashlib.sha256(f"{api_key}{secret}{timestamp}".encode()).hexdigest()
+
+
+async def _duffel_post(path: str, json_body: dict) -> httpx.Response:
+    """Isolated so tests can monkeypatch this instead of mocking httpx internals."""
+    settings = get_settings()
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        return await client.post(
+            f"{settings.duffel_base_url}{path}",
+            json=json_body,
+            headers={
+                "Authorization": f"Bearer {settings.duffel_api_key}",
+                "Duffel-Version": "v2",
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+            },
+        )
+
+
+async def _hotelbeds_post(path: str, json_body: dict) -> httpx.Response:
+    """Isolated so tests can monkeypatch this instead of mocking httpx internals."""
+    settings = get_settings()
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        return await client.post(
+            f"{settings.hotelbeds_base_url}{path}",
+            json=json_body,
+            headers={
+                "Api-key": settings.hotelbeds_api_key,
+                "X-Signature": _hotelbeds_signature(
+                    settings.hotelbeds_api_key, settings.hotelbeds_api_secret
+                ),
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+            },
+        )
+
+
 async def search_flights(
     origin: str, destination: str, departure_date: str, budget_amount: float
 ) -> tuple[list[Candidate], Optional[SearchError]]:
-    """Amadeus Flight Offers Search, cheapest offers first."""
-    client = _get_amadeus_client()
-
-    def _call():
-        return client.shopping.flight_offers_search.get(
-            originLocationCode=origin,
-            destinationLocationCode=destination,
-            departureDate=departure_date,
-            adults=1,
-            max=10,
-        )
+    """Duffel offer request, one-way, single adult — cheapest offers first."""
+    body = {
+        "data": {
+            "slices": [
+                {"origin": origin, "destination": destination, "departure_date": departure_date}
+            ],
+            "passengers": [{"type": "adult"}],
+            "cabin_class": "economy",
+        }
+    }
 
     try:
-        response = await asyncio.to_thread(_call)
-    except AmadeusResponseError as exc:
-        status = getattr(exc.response, "status_code", None)
-        reason = "rate_limited" if status == 429 else "malformed_response"
-        return [], SearchError(category=FLIGHTS, reason=reason)
+        response = await _duffel_post("/air/offer_requests?return_offers=true", body)
+    except httpx.RequestError:
+        return [], SearchError(category=FLIGHTS, reason="malformed_response")
 
-    offers = response.data or []
+    if response.status_code == 429:
+        return [], SearchError(category=FLIGHTS, reason="rate_limited")
+    if response.status_code >= 400:
+        return [], SearchError(category=FLIGHTS, reason="malformed_response")
+
+    try:
+        payload = response.json()
+        offers = payload["data"]["offers"]
+    except (ValueError, KeyError, TypeError):
+        return [], SearchError(category=FLIGHTS, reason="malformed_response")
+
     if not offers:
         return [], SearchError(category=FLIGHTS, reason="empty_results")
 
@@ -89,7 +134,7 @@ async def search_flights(
             id=offer["id"],
             category=FLIGHTS,
             name=f"{origin} -> {destination}",
-            price=float(offer["price"]["total"]),
+            price=float(offer["total_amount"]),
             metadata={"raw": offer},
         )
         for offer in offers
@@ -100,47 +145,42 @@ async def search_flights(
 async def search_hotels(
     destination: str, check_in: str, check_out: str, budget_amount: float
 ) -> tuple[list[Candidate], Optional[SearchError]]:
-    """Amadeus Hotel Search: city-code lookup, then offers for that city."""
-    client = _get_amadeus_client()
-
-    def _call():
-        hotel_ids_response = client.reference_data.locations.hotels.by_city.get(
-            cityCode=destination
-        )
-        hotel_ids = [h["hotelId"] for h in (hotel_ids_response.data or [])[:20]]
-        if not hotel_ids:
-            return None
-        return client.shopping.hotel_offers_search.get(
-            hotelIds=",".join(hotel_ids),
-            checkInDate=check_in,
-            checkOutDate=check_out,
-            adults=1,
-        )
+    """Hotelbeds hotel-content availability search by destination city code."""
+    body = {
+        "stay": {"checkIn": check_in, "checkOut": check_out},
+        "occupancies": [{"rooms": 1, "adults": 1, "children": 0}],
+        "destination": {"code": destination},
+    }
 
     try:
-        response = await asyncio.to_thread(_call)
-    except AmadeusResponseError as exc:
-        status = getattr(exc.response, "status_code", None)
-        reason = "rate_limited" if status == 429 else "malformed_response"
-        return [], SearchError(category=HOTELS, reason=reason)
+        response = await _hotelbeds_post("/hotel-api/1.0/hotels", body)
+    except httpx.RequestError:
+        return [], SearchError(category=HOTELS, reason="malformed_response")
 
-    if response is None:
-        return [], SearchError(category=HOTELS, reason="empty_results")
+    if response.status_code == 429:
+        return [], SearchError(category=HOTELS, reason="rate_limited")
+    if response.status_code >= 400:
+        return [], SearchError(category=HOTELS, reason="malformed_response")
 
-    offers = response.data or []
-    if not offers:
+    try:
+        payload = response.json()
+        hotels = payload["hotels"]["hotels"]
+    except (ValueError, KeyError, TypeError):
+        return [], SearchError(category=HOTELS, reason="malformed_response")
+
+    if not hotels:
         return [], SearchError(category=HOTELS, reason="empty_results")
 
     candidates = [
         Candidate(
-            id=offer["hotel"]["hotelId"],
+            id=str(hotel["code"]),
             category=HOTELS,
-            name=offer["hotel"].get("name", "Unknown hotel"),
-            price=float(offer["offers"][0]["price"]["total"]),
-            metadata={"raw": offer},
+            name=hotel.get("name", "Unknown hotel"),
+            price=float(hotel["minRate"]),
+            metadata={"raw": hotel},
         )
-        for offer in offers
-        if offer.get("offers")
+        for hotel in hotels
+        if "minRate" in hotel
     ]
     if not candidates:
         return [], SearchError(category=HOTELS, reason="empty_results")

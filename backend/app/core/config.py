@@ -24,8 +24,15 @@ class Settings(BaseSettings):
     groq_api_key: str = ""
 
     # --- External data APIs ---
-    amadeus_client_id: str = ""
-    amadeus_client_secret: str = ""
+    # Amadeus's self-service portal was decommissioned 2026-07-17 (Enterprise
+    # API only now, not viable for this project) — replaced with Duffel
+    # (flights) and Hotelbeds (hotels), both of which still offer genuinely
+    # accessible sandbox tiers for individual developers.
+    duffel_api_key: str = ""
+    duffel_base_url: str = "https://api.duffel.com"
+    hotelbeds_api_key: str = ""
+    hotelbeds_api_secret: str = ""
+    hotelbeds_base_url: str = "https://api.test.hotelbeds.com"
     google_places_api_key: str = ""
 
     # --- Observability ---

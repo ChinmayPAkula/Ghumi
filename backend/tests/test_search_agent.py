@@ -1,15 +1,16 @@
 """
 Tests for search_agent.
 
-All Amadeus/Google Places SDK calls are mocked — no real network access,
-no API keys needed. Live verification against real sandbox APIs is a
-separate manual step (see scripts/verify_search_agent_live.py) once keys
-are available, same pattern as budget_agent's Groq verification.
+Duffel/Hotelbeds calls are mocked at the _duffel_post/_hotelbeds_post
+boundary (plain httpx.Response objects, no real network access). Google
+Places SDK calls are mocked the same way budget_agent mocks the Groq
+client. Live verification against real sandbox APIs is a separate manual
+step (see scripts/verify_search_agent_live.py) once keys are available.
 """
 from unittest.mock import MagicMock, patch
 
+import httpx
 import pytest
-from amadeus import ResponseError
 
 from app.agents.search_agent import (
     FLIGHTS,
@@ -24,31 +25,22 @@ from app.agents.search_agent import (
 )
 
 
-def _mock_amadeus_response(data):
-    response = MagicMock()
-    response.data = data
-    return response
+def _mock_response(status_code, json_body):
+    return httpx.Response(status_code, json=json_body, request=httpx.Request("POST", "http://test"))
 
 
-def _mock_response_error(status_code):
-    error_response = MagicMock()
-    error_response.status_code = status_code
-    return ResponseError(error_response)
-
-
-# --- search_flights ---
+# --- search_flights (Duffel) ---
 
 
 @pytest.mark.asyncio
 async def test_search_flights_returns_candidates_on_success():
     offers = [
-        {"id": "1", "price": {"total": "12000.00"}},
-        {"id": "2", "price": {"total": "9000.00"}},
+        {"id": "off_1", "total_amount": "12000.00"},
+        {"id": "off_2", "total_amount": "9000.00"},
     ]
-    mock_client = MagicMock()
-    mock_client.shopping.flight_offers_search.get.return_value = _mock_amadeus_response(offers)
+    mock_response = _mock_response(200, {"data": {"offers": offers}})
 
-    with patch("app.agents.search_agent._get_amadeus_client", return_value=mock_client):
+    with patch("app.agents.search_agent._duffel_post", return_value=mock_response):
         candidates, error = await search_flights("BLR", "HND", "2026-03-12", 50000)
 
     assert error is None
@@ -59,10 +51,9 @@ async def test_search_flights_returns_candidates_on_success():
 
 @pytest.mark.asyncio
 async def test_search_flights_empty_results():
-    mock_client = MagicMock()
-    mock_client.shopping.flight_offers_search.get.return_value = _mock_amadeus_response([])
+    mock_response = _mock_response(200, {"data": {"offers": []}})
 
-    with patch("app.agents.search_agent._get_amadeus_client", return_value=mock_client):
+    with patch("app.agents.search_agent._duffel_post", return_value=mock_response):
         candidates, error = await search_flights("BLR", "HND", "2026-03-12", 50000)
 
     assert candidates == []
@@ -72,10 +63,9 @@ async def test_search_flights_empty_results():
 
 @pytest.mark.asyncio
 async def test_search_flights_rate_limited():
-    mock_client = MagicMock()
-    mock_client.shopping.flight_offers_search.get.side_effect = _mock_response_error(429)
+    mock_response = _mock_response(429, {"errors": [{"title": "Too Many Requests"}]})
 
-    with patch("app.agents.search_agent._get_amadeus_client", return_value=mock_client):
+    with patch("app.agents.search_agent._duffel_post", return_value=mock_response):
         candidates, error = await search_flights("BLR", "HND", "2026-03-12", 50000)
 
     assert candidates == []
@@ -83,35 +73,38 @@ async def test_search_flights_rate_limited():
 
 
 @pytest.mark.asyncio
-async def test_search_flights_other_api_error_is_malformed_response():
-    mock_client = MagicMock()
-    mock_client.shopping.flight_offers_search.get.side_effect = _mock_response_error(500)
+async def test_search_flights_server_error_is_malformed_response():
+    mock_response = _mock_response(500, {"errors": [{"title": "Internal Server Error"}]})
 
-    with patch("app.agents.search_agent._get_amadeus_client", return_value=mock_client):
+    with patch("app.agents.search_agent._duffel_post", return_value=mock_response):
         candidates, error = await search_flights("BLR", "HND", "2026-03-12", 50000)
 
     assert error.reason == "malformed_response"
 
 
-# --- search_hotels ---
+@pytest.mark.asyncio
+async def test_search_flights_network_error_is_malformed_response():
+    with patch(
+        "app.agents.search_agent._duffel_post",
+        side_effect=httpx.ConnectError("connection failed"),
+    ):
+        candidates, error = await search_flights("BLR", "HND", "2026-03-12", 50000)
+
+    assert candidates == []
+    assert error.reason == "malformed_response"
+
+
+# --- search_hotels (Hotelbeds) ---
 
 
 @pytest.mark.asyncio
 async def test_search_hotels_returns_candidates_on_success():
-    mock_client = MagicMock()
-    mock_client.reference_data.locations.hotels.by_city.get.return_value = _mock_amadeus_response(
-        [{"hotelId": "H1"}]
-    )
-    mock_client.shopping.hotel_offers_search.get.return_value = _mock_amadeus_response(
-        [
-            {
-                "hotel": {"hotelId": "H1", "name": "Test Hotel"},
-                "offers": [{"price": {"total": "8000.00"}}],
-            }
-        ]
+    mock_response = _mock_response(
+        200,
+        {"hotels": {"hotels": [{"code": 123, "name": "Test Hotel", "minRate": "8000.00"}]}},
     )
 
-    with patch("app.agents.search_agent._get_amadeus_client", return_value=mock_client):
+    with patch("app.agents.search_agent._hotelbeds_post", return_value=mock_response):
         candidates, error = await search_hotels("HND", "2026-03-12", "2026-03-19", 30000)
 
     assert error is None
@@ -120,11 +113,10 @@ async def test_search_hotels_returns_candidates_on_success():
 
 
 @pytest.mark.asyncio
-async def test_search_hotels_no_city_matches_is_empty_results():
-    mock_client = MagicMock()
-    mock_client.reference_data.locations.hotels.by_city.get.return_value = _mock_amadeus_response([])
+async def test_search_hotels_no_matches_is_empty_results():
+    mock_response = _mock_response(200, {"hotels": {"hotels": []}})
 
-    with patch("app.agents.search_agent._get_amadeus_client", return_value=mock_client):
+    with patch("app.agents.search_agent._hotelbeds_post", return_value=mock_response):
         candidates, error = await search_hotels("ZZZ", "2026-03-12", "2026-03-19", 30000)
 
     assert candidates == []
@@ -132,7 +124,18 @@ async def test_search_hotels_no_city_matches_is_empty_results():
     assert error.reason == "empty_results"
 
 
-# --- search_food / search_activities (share _search_places) ---
+@pytest.mark.asyncio
+async def test_search_hotels_malformed_json_shape():
+    mock_response = _mock_response(200, {"unexpected": "shape"})
+
+    with patch("app.agents.search_agent._hotelbeds_post", return_value=mock_response):
+        candidates, error = await search_hotels("HND", "2026-03-12", "2026-03-19", 30000)
+
+    assert candidates == []
+    assert error.reason == "malformed_response"
+
+
+# --- search_food / search_activities (share _search_places, Google Places SDK) ---
 
 
 @pytest.mark.asyncio
@@ -192,27 +195,19 @@ async def test_underspent_flight_reallocates_leftover_to_other_categories():
 
         return [Candidate(id="1", category=FLIGHTS, name="flight", price=30000.0)], None
 
-    async def fake_search_hotels(*args, **kwargs):
-        return [], None
-
-    async def fake_search_food(*args, **kwargs):
-        return [], None
-
-    async def fake_search_activities(*args, **kwargs):
+    async def fake_empty(*args, **kwargs):
         return [], None
 
     with patch("app.agents.search_agent.search_flights", fake_search_flights), patch(
-        "app.agents.search_agent.search_hotels", fake_search_hotels
-    ), patch("app.agents.search_agent.search_food", fake_search_food), patch(
-        "app.agents.search_agent.search_activities", fake_search_activities
+        "app.agents.search_agent.search_hotels", fake_empty
+    ), patch("app.agents.search_agent.search_food", fake_empty), patch(
+        "app.agents.search_agent.search_activities", fake_empty
     ):
         results, errors, conflicts = await run_search_agent(
             "BLR", "HND", "2026-03-12", "2026-03-19", budget_allocation
         )
 
     assert conflicts == []
-    # 20000 leftover (50000 allocated - 30000 actual) redistributed across
-    # hotels/food/activities, on top of their original 20000+15000+15000=50000 pool
     assert results[FLIGHTS][0].price == 30000.0
 
 

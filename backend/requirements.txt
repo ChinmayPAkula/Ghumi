@@ -24,10 +24,12 @@ sentry-sdk[fastapi]
 python-dotenv
 
 # --- External APIs ---
-amadeus
+# Flights (Duffel) and hotels (Hotelbeds) are called directly via httpx, no
+# SDK needed. Amadeus is not used — its self-service/test tier was
+# decommissioned 2026-07-17 (Enterprise API only now).
 googlemaps
+httpx
 
 # --- Testing ---
 pytest
 pytest-asyncio
-httpx
