@@ -26,13 +26,14 @@ class Settings(BaseSettings):
     # --- External data APIs ---
     # Amadeus's self-service portal was decommissioned 2026-07-17 (Enterprise
     # API only now, not viable for this project) — replaced with Duffel
-    # (flights) and Hotelbeds (hotels), both of which still offer genuinely
-    # accessible sandbox tiers for individual developers.
+    # (flights) and LiteAPI (hotels). Hotelbeds was tried for hotels first
+    # but its sandbox's very restrictive quota (a handful of calls before
+    # "Quota exceeded") made it impractical for active development —
+    # LiteAPI's sandbox allows 5 req/s, a genuinely usable limit.
     duffel_api_key: str = ""
     duffel_base_url: str = "https://api.duffel.com"
-    hotelbeds_api_key: str = ""
-    hotelbeds_api_secret: str = ""
-    hotelbeds_base_url: str = "https://api.test.hotelbeds.com"
+    liteapi_key: str = ""
+    liteapi_base_url: str = "https://api.liteapi.travel/v3.0"
     google_places_api_key: str = ""
 
     # --- Observability ---

@@ -20,21 +20,28 @@ Responsibilities:
 Providers:
   - Flights: Duffel (REST, Bearer token) — replaces Amadeus, whose
     self-service/test tier was decommissioned 2026-07-17.
-  - Hotels: Hotelbeds (REST, Api-key + SHA-256 X-Signature) — same reason.
+  - Hotels: LiteAPI (REST, X-API-Key header) — Hotelbeds was tried first
+    but its sandbox's very restrictive quota (a handful of calls before
+    "Quota exceeded") made it impractical for active development; LiteAPI's
+    sandbox allows 5 req/s.
   - Food/activities: Google Places API (New) (REST, X-Goog-Api-Key +
     field mask) — the legacy googlemaps SDK's places()/geocode() methods
     hit the old Places API, which isn't enabled on a plain (unbilled)
     API key; the New API's searchText endpoint takes a destination name
     directly in the query text, so no separate geocoding call is needed.
 
-All three providers are plain REST APIs, called directly via
-httpx.AsyncClient — no SDK, no thread-pool wrapping needed.
+    Also used to resolve a city name to its ISO country code (via
+    addressComponents) for LiteAPI's hotel search, which requires
+    countryCode + cityName rather than accepting a city name alone —
+    reuses the same Places integration instead of adding a fourth
+    dependency just for country-code lookup.
+
+All providers are plain REST APIs, called directly via httpx.AsyncClient
+— no SDK, no thread-pool wrapping needed.
 """
 from __future__ import annotations
 
 import asyncio
-import hashlib
-import time
 from typing import Optional
 
 import httpx
@@ -63,83 +70,7 @@ PRICE_LEVEL_PROXY = {
 }
 DEFAULT_PRICE_PROXY = 800
 
-
-def _hotelbeds_signature(api_key: str, secret: str) -> str:
-    timestamp = str(int(time.time()))
-    return hashlib.sha256(f"{api_key}{secret}{timestamp}".encode()).hexdigest()
-
-
-async def _hotelbeds_get(path: str, params: dict) -> httpx.Response:
-    """Isolated so tests can monkeypatch this instead of mocking httpx internals."""
-    settings = get_settings()
-    async with httpx.AsyncClient(timeout=15.0) as client:
-        return await client.get(
-            f"{settings.hotelbeds_base_url}{path}",
-            params=params,
-            headers={
-                "Api-key": settings.hotelbeds_api_key,
-                "X-Signature": _hotelbeds_signature(
-                    settings.hotelbeds_api_key, settings.hotelbeds_api_secret
-                ),
-                "Accept": "application/json",
-            },
-        )
-
-
-# Hotelbeds' destination codes are their own proprietary system (e.g. "TYO"
-# for Tokyo) — not IATA airport codes, and there's no name-search endpoint,
-# only a paginated master list (~7,300 entries as of 2026-09). Fetched once
-# per process and cached in memory rather than re-fetched on every hotel
-# search.
-_hotelbeds_destination_cache: Optional[dict[str, str]] = None
-_HOTELBEDS_DESTINATION_PAGE_SIZE = 500
-
-
-async def _load_hotelbeds_destinations() -> dict[str, str]:
-    destinations: dict[str, str] = {}
-    start = 1
-    while True:
-        response = await _hotelbeds_get(
-            "/hotel-content-api/1.0/locations/destinations",
-            {
-                "fields": "code,name",
-                "language": "ENG",
-                "from": start,
-                "to": start + _HOTELBEDS_DESTINATION_PAGE_SIZE - 1,
-            },
-        )
-        payload = response.json()
-        page = payload.get("destinations", [])
-        for entry in page:
-            name = entry.get("name", {}).get("content", "").strip().lower()
-            if name:
-                destinations[name] = entry["code"]
-        total = payload.get("total", 0)
-        start += _HOTELBEDS_DESTINATION_PAGE_SIZE
-        if start > total or not page:
-            break
-    return destinations
-
-
-async def resolve_hotelbeds_destination_code(city_name: str) -> Optional[str]:
-    """
-    City name (e.g. "Tokyo", matching UserInput.destination) -> Hotelbeds
-    destination code (e.g. "TYO"). Returns None if no match is found —
-    callers should treat that as an empty_results SearchError, not a crash.
-    """
-    global _hotelbeds_destination_cache
-    if _hotelbeds_destination_cache is None:
-        _hotelbeds_destination_cache = await _load_hotelbeds_destinations()
-
-    name_lower = city_name.strip().lower()
-    if name_lower in _hotelbeds_destination_cache:
-        return _hotelbeds_destination_cache[name_lower]
-
-    # Fall back to substring match (e.g. "Tokyo" matching "Greater Tokyo")
-    for name, code in _hotelbeds_destination_cache.items():
-        if name_lower in name or name in name_lower:
-            return code
-    return None
+HOTEL_SEARCH_LIMIT = 20
 
 
 async def _duffel_post(path: str, json_body: dict) -> httpx.Response:
@@ -158,20 +89,28 @@ async def _duffel_post(path: str, json_body: dict) -> httpx.Response:
         )
 
 
-async def _hotelbeds_post(path: str, json_body: dict) -> httpx.Response:
+async def _liteapi_get(path: str, params: dict) -> httpx.Response:
+    """Isolated so tests can monkeypatch this instead of mocking httpx internals."""
+    settings = get_settings()
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        return await client.get(
+            f"{settings.liteapi_base_url}{path}",
+            params=params,
+            headers={"X-API-Key": settings.liteapi_key, "accept": "application/json"},
+        )
+
+
+async def _liteapi_post(path: str, json_body: dict) -> httpx.Response:
     """Isolated so tests can monkeypatch this instead of mocking httpx internals."""
     settings = get_settings()
     async with httpx.AsyncClient(timeout=15.0) as client:
         return await client.post(
-            f"{settings.hotelbeds_base_url}{path}",
+            f"{settings.liteapi_base_url}{path}",
             json=json_body,
             headers={
-                "Api-key": settings.hotelbeds_api_key,
-                "X-Signature": _hotelbeds_signature(
-                    settings.hotelbeds_api_key, settings.hotelbeds_api_secret
-                ),
-                "Content-Type": "application/json",
-                "Accept": "application/json",
+                "X-API-Key": settings.liteapi_key,
+                "accept": "application/json",
+                "content-type": "application/json",
             },
         )
 
@@ -237,62 +176,131 @@ async def search_flights(
     return candidates, None
 
 
+async def resolve_country_code(city_name: str) -> Optional[str]:
+    """
+    City name -> ISO 3166-1 alpha-2 country code (e.g. "Tokyo" -> "JP"),
+    via Google Places' addressComponents. LiteAPI's hotel search requires
+    countryCode + cityName rather than accepting a city name alone.
+    """
+    try:
+        response = await _places_post(
+            {"textQuery": city_name}, "places.addressComponents"
+        )
+    except httpx.RequestError:
+        return None
+    if response.status_code >= 400:
+        return None
+
+    try:
+        places = response.json().get("places", [])
+    except ValueError:
+        return None
+    if not places:
+        return None
+
+    for component in places[0].get("addressComponents", []):
+        if "country" in component.get("types", []):
+            return component.get("shortText")
+    return None
+
+
 async def search_hotels(
     city_name: str, check_in: str, check_out: str, budget_amount: float
 ) -> tuple[list[Candidate], Optional[SearchError]]:
     """
-    Hotelbeds hotel-content availability search. Takes a human-readable
-    city name (e.g. "Tokyo", matching UserInput.destination) — Hotelbeds
-    itself needs its own proprietary destination code, so that's resolved
-    internally via resolve_hotelbeds_destination_code() first.
+    LiteAPI hotel search: resolve country code (via Places), list hotels
+    in the city, then fetch rates for that shortlist. Two calls, since
+    LiteAPI's /data/hotels (metadata) and /hotels/rates (pricing) are
+    separate endpoints.
     """
-    destination_code = await resolve_hotelbeds_destination_code(city_name)
-    if destination_code is None:
+    country_code = await resolve_country_code(city_name)
+    if country_code is None:
         return [], SearchError(category=HOTELS, reason="empty_results")
 
-    body = {
-        "stay": {"checkIn": check_in, "checkOut": check_out},
-        "occupancies": [{"rooms": 1, "adults": 1, "children": 0}],
-        "destination": {"code": destination_code},
-    }
-
     try:
-        response = await _hotelbeds_post("/hotel-api/1.0/hotels", body)
+        hotels_response = await _liteapi_get(
+            "/data/hotels",
+            {"countryCode": country_code, "cityName": city_name, "limit": HOTEL_SEARCH_LIMIT},
+        )
     except httpx.RequestError:
         return [], SearchError(category=HOTELS, reason="malformed_response")
 
-    if response.status_code == 429:
+    if hotels_response.status_code == 429:
         return [], SearchError(category=HOTELS, reason="rate_limited")
-    if response.status_code >= 400:
+    if hotels_response.status_code >= 400:
         return [], SearchError(category=HOTELS, reason="malformed_response")
 
     try:
-        payload = response.json()
-        hotels_block = payload["hotels"]
-    except (ValueError, KeyError, TypeError):
+        hotels = hotels_response.json().get("data", [])
+    except ValueError:
         return [], SearchError(category=HOTELS, reason="malformed_response")
 
-    # Hotelbeds omits the "hotels" list key entirely (not even []) when
-    # zero hotels match — {"hotels": {"total": 0}} is a valid empty
-    # response, not a malformed one.
-    hotels = hotels_block.get("hotels", [])
     if not hotels:
         return [], SearchError(category=HOTELS, reason="empty_results")
 
-    candidates = [
-        Candidate(
-            id=str(hotel["code"]),
-            category=HOTELS,
-            name=hotel.get("name", "Unknown hotel"),
-            price=float(hotel["minRate"]),
-            metadata={"raw": hotel},
+    hotel_meta = {h["id"]: h for h in hotels if "id" in h}
+    if not hotel_meta:
+        return [], SearchError(category=HOTELS, reason="empty_results")
+
+    rates_body = {
+        "hotelIds": list(hotel_meta.keys()),
+        "occupancies": [{"adults": 1}],
+        "currency": "INR",
+        "guestNationality": "IN",
+        "checkin": check_in,
+        "checkout": check_out,
+    }
+
+    try:
+        rates_response = await _liteapi_post("/hotels/rates", rates_body)
+    except httpx.RequestError:
+        return [], SearchError(category=HOTELS, reason="malformed_response")
+
+    if rates_response.status_code == 429:
+        return [], SearchError(category=HOTELS, reason="rate_limited")
+    if rates_response.status_code >= 400:
+        return [], SearchError(category=HOTELS, reason="malformed_response")
+
+    try:
+        rate_entries = rates_response.json().get("data", [])
+    except ValueError:
+        return [], SearchError(category=HOTELS, reason="malformed_response")
+
+    candidates = []
+    for entry in rate_entries:
+        hotel_id = entry.get("hotelId")
+        meta = hotel_meta.get(hotel_id)
+        if meta is None:
+            continue
+        cheapest = _cheapest_liteapi_rate(entry.get("roomTypes", []))
+        if cheapest is None:
+            continue
+        candidates.append(
+            Candidate(
+                id=hotel_id,
+                category=HOTELS,
+                name=meta.get("name", "Unknown hotel"),
+                price=cheapest,
+                rating=meta.get("rating"),
+                review_count=meta.get("reviewCount"),
+                metadata={"raw": {"hotel": meta, "rate_entry": entry}},
+            )
         )
-        for hotel in hotels
-        if "minRate" in hotel
-    ]
+
     if not candidates:
         return [], SearchError(category=HOTELS, reason="empty_results")
     return candidates, None
+
+
+def _cheapest_liteapi_rate(room_types: list[dict]) -> Optional[float]:
+    amounts = []
+    for room_type in room_types:
+        for rate in room_type.get("rates", []):
+            for total in rate.get("retailRate", {}).get("total", []):
+                amount = total.get("amount")
+                if amount is not None:
+                    amounts.append(float(amount))
+    return min(amounts) if amounts else None
 
 
 PLACES_FIELD_MASK = (

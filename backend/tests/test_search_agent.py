@@ -1,10 +1,10 @@
 """
 Tests for search_agent.
 
-All three providers (Duffel, Hotelbeds, Google Places API New) are mocked
-at their respective _duffel_post/_hotelbeds_post/_places_post boundary
-(plain httpx.Response objects, no real network access). Live verification
-against real APIs is a separate manual step (see
+All providers (Duffel, LiteAPI, Google Places API New) are mocked at
+their respective _duffel_post/_liteapi_get/_liteapi_post/_places_post
+boundary (plain httpx.Response objects, no real network access). Live
+verification against real APIs is a separate manual step (see
 scripts/verify_search_agent_live.py).
 """
 from unittest.mock import patch
@@ -21,7 +21,7 @@ from app.agents.search_agent import (
     search_hotels,
     search_food,
     search_activities,
-    resolve_hotelbeds_destination_code,
+    resolve_country_code,
     run_search_agent,
 )
 
@@ -95,115 +95,84 @@ async def test_search_flights_network_error_is_malformed_response():
     assert error.reason == "malformed_response"
 
 
-# --- _load_hotelbeds_destinations (pagination) ---
+# --- resolve_country_code (via Places) ---
 
 
 @pytest.mark.asyncio
-async def test_load_hotelbeds_destinations_paginates_until_total_reached():
-    """
-    Regression test: live-verified against the real sandbox that a single
-    page tops out at 500 entries while the full list is ~7,300 — the loop
-    must keep paging using "total" rather than stopping after one page.
-    """
-    from app.agents.search_agent import _load_hotelbeds_destinations, _HOTELBEDS_DESTINATION_PAGE_SIZE
-
-    page_1 = _mock_response(
+async def test_resolve_country_code_finds_country_component():
+    mock_response = _mock_response(
         200,
         {
-            "total": _HOTELBEDS_DESTINATION_PAGE_SIZE + 1,
-            "destinations": [
-                {"code": f"C{i}", "name": {"content": f"City{i}"}}
-                for i in range(_HOTELBEDS_DESTINATION_PAGE_SIZE)
-            ],
-        },
-    )
-    page_2 = _mock_response(
-        200,
-        {
-            "total": _HOTELBEDS_DESTINATION_PAGE_SIZE + 1,
-            "destinations": [{"code": "TYO", "name": {"content": "Tokyo"}}],
+            "places": [
+                {
+                    "addressComponents": [
+                        {"longText": "Tokyo", "shortText": "Tokyo", "types": ["political"]},
+                        {"longText": "Japan", "shortText": "JP", "types": ["country", "political"]},
+                    ]
+                }
+            ]
         },
     )
 
-    with patch(
-        "app.agents.search_agent._hotelbeds_get", side_effect=[page_1, page_2]
-    ) as mock_get:
-        destinations = await _load_hotelbeds_destinations()
+    with patch("app.agents.search_agent._places_post", return_value=mock_response):
+        code = await resolve_country_code("Tokyo")
 
-    assert mock_get.call_count == 2
-    assert len(destinations) == _HOTELBEDS_DESTINATION_PAGE_SIZE + 1
-    assert destinations["tokyo"] == "TYO"
+    assert code == "JP"
 
 
 @pytest.mark.asyncio
-async def test_load_hotelbeds_destinations_single_page_when_total_fits():
-    from app.agents.search_agent import _load_hotelbeds_destinations
+async def test_resolve_country_code_no_places_returns_none():
+    mock_response = _mock_response(200, {"places": []})
 
-    page_1 = _mock_response(
-        200, {"total": 2, "destinations": [{"code": "TYO", "name": {"content": "Tokyo"}}]}
-    )
-
-    with patch("app.agents.search_agent._hotelbeds_get", return_value=page_1) as mock_get:
-        destinations = await _load_hotelbeds_destinations()
-
-    assert mock_get.call_count == 1
-    assert destinations == {"tokyo": "TYO"}
-
-
-# --- resolve_hotelbeds_destination_code ---
-
-
-@pytest.mark.asyncio
-async def test_resolve_hotelbeds_destination_code_exact_match():
-    import app.agents.search_agent as search_agent_module
-
-    search_agent_module._hotelbeds_destination_cache = {"tokyo": "TYO", "paris": "PAR"}
-    try:
-        code = await resolve_hotelbeds_destination_code("Tokyo")
-    finally:
-        search_agent_module._hotelbeds_destination_cache = None
-
-    assert code == "TYO"
-
-
-@pytest.mark.asyncio
-async def test_resolve_hotelbeds_destination_code_no_match_returns_none():
-    import app.agents.search_agent as search_agent_module
-
-    search_agent_module._hotelbeds_destination_cache = {"tokyo": "TYO"}
-    try:
-        code = await resolve_hotelbeds_destination_code("Nowhereville")
-    finally:
-        search_agent_module._hotelbeds_destination_cache = None
+    with patch("app.agents.search_agent._places_post", return_value=mock_response):
+        code = await resolve_country_code("Nowhereville")
 
     assert code is None
 
 
-# --- search_hotels (Hotelbeds) ---
+# --- search_hotels (LiteAPI) ---
 
 
 @pytest.mark.asyncio
 async def test_search_hotels_returns_candidates_on_success():
-    mock_response = _mock_response(
+    hotels_response = _mock_response(
         200,
-        {"hotels": {"hotels": [{"code": 123, "name": "Test Hotel", "minRate": "8000.00"}]}},
+        {"data": [{"id": "h1", "name": "Test Hotel", "rating": 8.5, "reviewCount": 200}]},
+    )
+    rates_response = _mock_response(
+        200,
+        {
+            "data": [
+                {
+                    "hotelId": "h1",
+                    "roomTypes": [
+                        {
+                            "rates": [
+                                {"retailRate": {"total": [{"amount": 8000.0, "currency": "INR"}]}}
+                            ]
+                        }
+                    ],
+                }
+            ]
+        },
     )
 
     with patch(
-        "app.agents.search_agent.resolve_hotelbeds_destination_code", return_value="TYO"
-    ), patch("app.agents.search_agent._hotelbeds_post", return_value=mock_response):
+        "app.agents.search_agent.resolve_country_code", return_value="JP"
+    ), patch(
+        "app.agents.search_agent._liteapi_get", return_value=hotels_response
+    ), patch("app.agents.search_agent._liteapi_post", return_value=rates_response):
         candidates, error = await search_hotels("Tokyo", "2026-03-12", "2026-03-19", 30000)
 
     assert error is None
     assert candidates[0].name == "Test Hotel"
     assert candidates[0].price == 8000.0
+    assert candidates[0].rating == 8.5
 
 
 @pytest.mark.asyncio
 async def test_search_hotels_unresolvable_city_is_empty_results():
-    with patch(
-        "app.agents.search_agent.resolve_hotelbeds_destination_code", return_value=None
-    ):
+    with patch("app.agents.search_agent.resolve_country_code", return_value=None):
         candidates, error = await search_hotels("Nowhereville", "2026-03-12", "2026-03-19", 30000)
 
     assert candidates == []
@@ -212,12 +181,12 @@ async def test_search_hotels_unresolvable_city_is_empty_results():
 
 
 @pytest.mark.asyncio
-async def test_search_hotels_no_matches_is_empty_results():
-    mock_response = _mock_response(200, {"hotels": {"hotels": []}})
+async def test_search_hotels_no_hotels_in_city_is_empty_results():
+    hotels_response = _mock_response(200, {"data": []})
 
     with patch(
-        "app.agents.search_agent.resolve_hotelbeds_destination_code", return_value="ZZZ"
-    ), patch("app.agents.search_agent._hotelbeds_post", return_value=mock_response):
+        "app.agents.search_agent.resolve_country_code", return_value="JP"
+    ), patch("app.agents.search_agent._liteapi_get", return_value=hotels_response):
         candidates, error = await search_hotels("Nowhereville", "2026-03-12", "2026-03-19", 30000)
 
     assert candidates == []
@@ -226,32 +195,37 @@ async def test_search_hotels_no_matches_is_empty_results():
 
 
 @pytest.mark.asyncio
-async def test_search_hotels_malformed_json_shape():
-    mock_response = _mock_response(200, {"unexpected": "shape"})
+async def test_search_hotels_rates_call_rate_limited():
+    hotels_response = _mock_response(200, {"data": [{"id": "h1", "name": "Test Hotel"}]})
+    rates_response = _mock_response(429, {"error": "rate limited"})
 
     with patch(
-        "app.agents.search_agent.resolve_hotelbeds_destination_code", return_value="TYO"
-    ), patch("app.agents.search_agent._hotelbeds_post", return_value=mock_response):
+        "app.agents.search_agent.resolve_country_code", return_value="JP"
+    ), patch(
+        "app.agents.search_agent._liteapi_get", return_value=hotels_response
+    ), patch("app.agents.search_agent._liteapi_post", return_value=rates_response):
         candidates, error = await search_hotels("Tokyo", "2026-03-12", "2026-03-19", 30000)
 
     assert candidates == []
-    assert error.reason == "malformed_response"
+    assert error.reason == "rate_limited"
 
 
 @pytest.mark.asyncio
-async def test_search_hotels_omitted_list_key_is_empty_not_malformed():
+async def test_search_hotels_no_rates_for_any_hotel_is_empty_results():
     """
-    Regression test: Hotelbeds omits the "hotels" list key entirely (not
-    even []) when zero hotels match a destination — {"hotels": {"total": 0}}
-    is a valid empty response, caught live against the real sandbox API,
-    and must not be misclassified as malformed_response.
+    A hotel can appear in /data/hotels but have no bookable rates for the
+    given dates (sold out, no availability) — rates response may simply
+    omit it rather than returning an explicit error.
     """
-    mock_response = _mock_response(200, {"hotels": {"total": 0}})
+    hotels_response = _mock_response(200, {"data": [{"id": "h1", "name": "Test Hotel"}]})
+    rates_response = _mock_response(200, {"data": []})
 
     with patch(
-        "app.agents.search_agent.resolve_hotelbeds_destination_code", return_value="TYO"
-    ), patch("app.agents.search_agent._hotelbeds_post", return_value=mock_response):
-        candidates, error = await search_hotels("Tokyo", "2026-12-12", "2026-12-19", 30000)
+        "app.agents.search_agent.resolve_country_code", return_value="JP"
+    ), patch(
+        "app.agents.search_agent._liteapi_get", return_value=hotels_response
+    ), patch("app.agents.search_agent._liteapi_post", return_value=rates_response):
+        candidates, error = await search_hotels("Tokyo", "2026-03-12", "2026-03-19", 30000)
 
     assert candidates == []
     assert error.reason == "empty_results"
