@@ -6,12 +6,12 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      // Frontend calls /api/... in dev, forwarded to FastAPI on :8000.
-      // Matches VITE_API_BASE_URL fallback in src/lib/api.ts.
+      // Frontend calls /api/... in dev. The backend ALSO expects the /api
+      // prefix (see backend/app/main.py: include_router(prefix="/api")),
+      // so this just forwards the path as-is to :8000 — no rewrite/strip.
       '/api': {
         target: 'http://localhost:8000',
         changeOrigin: true,
-        rewrite: (path) => path.replace(/^\/api/, ''),
       },
     },
   },
