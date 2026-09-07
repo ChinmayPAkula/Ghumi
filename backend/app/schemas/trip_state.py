@@ -35,12 +35,12 @@ class UserInput(BaseModel):
     straight onto the failing form field (red border + inline message).
     """
 
-    destination: Optional[str] = None       # None + surprise_me=True if unset
+    destination: Optional[str] = Field(default=None, max_length=100)  # None + surprise_me=True if unset
     surprise_me: bool = False
     budget_total: float
     currency: str = "INR"
     duration_days: int
-    priorities_raw: str = ""                # free text, e.g. "I care more about food"
+    priorities_raw: str = Field(default="", max_length=500)  # free text, e.g. "I care more about food"
     style: Optional[str] = None              # hidden_gems / popular / relaxed / adventurous / cultural / food_focused
 
     @field_validator("destination")
@@ -58,6 +58,8 @@ class UserInput(BaseModel):
     def budget_must_be_positive(cls, v: float) -> float:
         if v <= 0:
             raise ValueError("Budget must be greater than 0")
+        if v > 100_000_000:
+            raise ValueError("Budget must be a realistic amount")
         return v
 
     @field_validator("duration_days")

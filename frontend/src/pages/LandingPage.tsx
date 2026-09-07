@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { Link } from 'react-router-dom'
 
 /**
  * Ported from the validated HTML prototype (ghumi_transition_demo.html).
@@ -83,6 +84,13 @@ export default function LandingPage() {
             <Field label="Status" value="Planning" />
           </div>
         </div>
+
+                <Link
+          to="/plan"
+          className="relative z-10 mt-9 font-mono text-xs tracking-wider uppercase text-paper bg-brand hover:bg-brand/90 transition-colors px-8 py-3.5 rounded-full shadow-lg"
+        >
+          Plan now
+        </Link>
 
         <div className="absolute bottom-7 left-1/2 -translate-x-1/2 font-mono text-[10px] tracking-widest text-paper/60 uppercase">
           scroll ↓
