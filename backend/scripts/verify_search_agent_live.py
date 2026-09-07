@@ -7,13 +7,12 @@ tests/test_search_agent.py).
 Requires in your .env:
     DUFFEL_API_KEY          (Duffel sandbox/test access token)
     HOTELBEDS_API_KEY / HOTELBEDS_API_SECRET  (Hotelbeds test environment)
-    GOOGLE_PLACES_API_KEY
+    GOOGLE_PLACES_API_KEY  (needs Places API (New) enabled, not legacy Places API)
 
 Amadeus is not used — its self-service/test tier was decommissioned
 2026-07-17 (Enterprise API only now, not viable for this project).
 
-Not runnable yet — no live keys exist as of this commit (see PRD §7.3).
-Once keys are added to .env, run from backend/:
+Run from backend/ (with PYTHONPATH=. if running outside an installed package):
     python scripts/verify_search_agent_live.py
 """
 import asyncio
@@ -29,11 +28,17 @@ SAMPLE_BUDGET_ALLOCATION = {
 
 
 async def main():
+    # Duffel needs IATA airport codes (BLR/HND); Hotelbeds needs its own
+    # proprietary destination code, resolved internally from destination_city
+    # via resolve_hotelbeds_destination_code(); Google Places just takes
+    # destination_city as plain text in its query. These are genuinely
+    # different location identifier systems, not redundant parameters.
     results, errors, conflicts = await run_search_agent(
-        origin="BLR",
-        destination="HND",
-        departure_date="2026-03-12",
-        return_date="2026-03-19",
+        origin_iata="BLR",
+        destination_iata="HND",
+        destination_city="Tokyo",
+        departure_date="2026-12-12",
+        return_date="2026-12-19",
         budget_allocation=SAMPLE_BUDGET_ALLOCATION,
     )
 

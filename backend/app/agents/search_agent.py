@@ -21,12 +21,14 @@ Providers:
   - Flights: Duffel (REST, Bearer token) — replaces Amadeus, whose
     self-service/test tier was decommissioned 2026-07-17.
   - Hotels: Hotelbeds (REST, Api-key + SHA-256 X-Signature) — same reason.
-  - Food/activities: Google Places SDK (unaffected, still official/sync).
+  - Food/activities: Google Places API (New) (REST, X-Goog-Api-Key +
+    field mask) — the legacy googlemaps SDK's places()/geocode() methods
+    hit the old Places API, which isn't enabled on a plain (unbilled)
+    API key; the New API's searchText endpoint takes a destination name
+    directly in the query text, so no separate geocoding call is needed.
 
-Duffel and Hotelbeds are called directly over HTTP via httpx.AsyncClient
-(no official/blocking SDK involved, so no thread-pool wrapping needed).
-The Google Places SDK is synchronous, so its calls are run via
-asyncio.to_thread so they don't block the event loop.
+All three providers are plain REST APIs, called directly via
+httpx.AsyncClient — no SDK, no thread-pool wrapping needed.
 """
 from __future__ import annotations
 
@@ -35,7 +37,6 @@ import hashlib
 import time
 from typing import Optional
 
-import googlemaps
 import httpx
 
 from app.agents.budget_agent import allocate_budget
@@ -51,15 +52,94 @@ REALLOCATABLE_CATEGORIES = (HOTELS, FOOD, ACTIVITIES)
 
 RESOLUTION_OPTIONS = ["increase_budget", "compromise_equally", "compromise_specific"]
 
-
-def _get_places_client() -> googlemaps.Client:
-    settings = get_settings()
-    return googlemaps.Client(key=settings.google_places_api_key)
+# Google's enum price levels -> a rough rupee proxy, refined in Phase 2
+# once real pricing data sources exist.
+PRICE_LEVEL_PROXY = {
+    "PRICE_LEVEL_FREE": 0,
+    "PRICE_LEVEL_INEXPENSIVE": 300,
+    "PRICE_LEVEL_MODERATE": 800,
+    "PRICE_LEVEL_EXPENSIVE": 1500,
+    "PRICE_LEVEL_VERY_EXPENSIVE": 3000,
+}
+DEFAULT_PRICE_PROXY = 800
 
 
 def _hotelbeds_signature(api_key: str, secret: str) -> str:
     timestamp = str(int(time.time()))
     return hashlib.sha256(f"{api_key}{secret}{timestamp}".encode()).hexdigest()
+
+
+async def _hotelbeds_get(path: str, params: dict) -> httpx.Response:
+    """Isolated so tests can monkeypatch this instead of mocking httpx internals."""
+    settings = get_settings()
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        return await client.get(
+            f"{settings.hotelbeds_base_url}{path}",
+            params=params,
+            headers={
+                "Api-key": settings.hotelbeds_api_key,
+                "X-Signature": _hotelbeds_signature(
+                    settings.hotelbeds_api_key, settings.hotelbeds_api_secret
+                ),
+                "Accept": "application/json",
+            },
+        )
+
+
+# Hotelbeds' destination codes are their own proprietary system (e.g. "TYO"
+# for Tokyo) — not IATA airport codes, and there's no name-search endpoint,
+# only a paginated master list (~7,300 entries as of 2026-09). Fetched once
+# per process and cached in memory rather than re-fetched on every hotel
+# search.
+_hotelbeds_destination_cache: Optional[dict[str, str]] = None
+_HOTELBEDS_DESTINATION_PAGE_SIZE = 500
+
+
+async def _load_hotelbeds_destinations() -> dict[str, str]:
+    destinations: dict[str, str] = {}
+    start = 1
+    while True:
+        response = await _hotelbeds_get(
+            "/hotel-content-api/1.0/locations/destinations",
+            {
+                "fields": "code,name",
+                "language": "ENG",
+                "from": start,
+                "to": start + _HOTELBEDS_DESTINATION_PAGE_SIZE - 1,
+            },
+        )
+        payload = response.json()
+        page = payload.get("destinations", [])
+        for entry in page:
+            name = entry.get("name", {}).get("content", "").strip().lower()
+            if name:
+                destinations[name] = entry["code"]
+        total = payload.get("total", 0)
+        start += _HOTELBEDS_DESTINATION_PAGE_SIZE
+        if start > total or not page:
+            break
+    return destinations
+
+
+async def resolve_hotelbeds_destination_code(city_name: str) -> Optional[str]:
+    """
+    City name (e.g. "Tokyo", matching UserInput.destination) -> Hotelbeds
+    destination code (e.g. "TYO"). Returns None if no match is found —
+    callers should treat that as an empty_results SearchError, not a crash.
+    """
+    global _hotelbeds_destination_cache
+    if _hotelbeds_destination_cache is None:
+        _hotelbeds_destination_cache = await _load_hotelbeds_destinations()
+
+    name_lower = city_name.strip().lower()
+    if name_lower in _hotelbeds_destination_cache:
+        return _hotelbeds_destination_cache[name_lower]
+
+    # Fall back to substring match (e.g. "Tokyo" matching "Greater Tokyo")
+    for name, code in _hotelbeds_destination_cache.items():
+        if name_lower in name or name in name_lower:
+            return code
+    return None
 
 
 async def _duffel_post(path: str, json_body: dict) -> httpx.Response:
@@ -92,6 +172,21 @@ async def _hotelbeds_post(path: str, json_body: dict) -> httpx.Response:
                 ),
                 "Content-Type": "application/json",
                 "Accept": "application/json",
+            },
+        )
+
+
+async def _places_post(json_body: dict, field_mask: str) -> httpx.Response:
+    """Isolated so tests can monkeypatch this instead of mocking httpx internals."""
+    settings = get_settings()
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        return await client.post(
+            "https://places.googleapis.com/v1/places:searchText",
+            json=json_body,
+            headers={
+                "Content-Type": "application/json",
+                "X-Goog-Api-Key": settings.google_places_api_key,
+                "X-Goog-FieldMask": field_mask,
             },
         )
 
@@ -143,13 +238,22 @@ async def search_flights(
 
 
 async def search_hotels(
-    destination: str, check_in: str, check_out: str, budget_amount: float
+    city_name: str, check_in: str, check_out: str, budget_amount: float
 ) -> tuple[list[Candidate], Optional[SearchError]]:
-    """Hotelbeds hotel-content availability search by destination city code."""
+    """
+    Hotelbeds hotel-content availability search. Takes a human-readable
+    city name (e.g. "Tokyo", matching UserInput.destination) — Hotelbeds
+    itself needs its own proprietary destination code, so that's resolved
+    internally via resolve_hotelbeds_destination_code() first.
+    """
+    destination_code = await resolve_hotelbeds_destination_code(city_name)
+    if destination_code is None:
+        return [], SearchError(category=HOTELS, reason="empty_results")
+
     body = {
         "stay": {"checkIn": check_in, "checkOut": check_out},
         "occupancies": [{"rooms": 1, "adults": 1, "children": 0}],
-        "destination": {"code": destination},
+        "destination": {"code": destination_code},
     }
 
     try:
@@ -164,10 +268,14 @@ async def search_hotels(
 
     try:
         payload = response.json()
-        hotels = payload["hotels"]["hotels"]
+        hotels_block = payload["hotels"]
     except (ValueError, KeyError, TypeError):
         return [], SearchError(category=HOTELS, reason="malformed_response")
 
+    # Hotelbeds omits the "hotels" list key entirely (not even []) when
+    # zero hotels match — {"hotels": {"total": 0}} is a valid empty
+    # response, not a malformed one.
+    hotels = hotels_block.get("hotels", [])
     if not hotels:
         return [], SearchError(category=HOTELS, reason="empty_results")
 
@@ -187,44 +295,50 @@ async def search_hotels(
     return candidates, None
 
 
-async def _search_places(
-    destination: str, place_type: str, category: str, budget_amount: float
-) -> tuple[list[Candidate], Optional[SearchError]]:
-    """Shared Google Places lookup for both food and activities."""
-    client = _get_places_client()
+PLACES_FIELD_MASK = (
+    "places.id,places.displayName,places.rating,places.userRatingCount,places.priceLevel"
+)
 
-    def _call():
-        geocode = client.geocode(destination)
-        if not geocode:
-            return None
-        location = geocode[0]["geometry"]["location"]
-        return client.places(query=place_type, location=location, type=place_type)
+
+async def _search_places(
+    destination: str, query_term: str, category: str, budget_amount: float
+) -> tuple[list[Candidate], Optional[SearchError]]:
+    """
+    Shared Google Places (New) text search for both food and activities.
+    The destination name goes straight into the query text (e.g. "restaurant
+    in Tokyo") — no separate geocoding call needed.
+    """
+    body = {"textQuery": f"{query_term} in {destination}"}
 
     try:
-        response = await asyncio.to_thread(_call)
-    except googlemaps.exceptions.ApiError:
+        response = await _places_post(body, PLACES_FIELD_MASK)
+    except httpx.RequestError:
         return [], SearchError(category=category, reason="malformed_response")
-    except googlemaps.exceptions.Timeout:
+
+    if response.status_code == 429:
         return [], SearchError(category=category, reason="rate_limited")
-
-    if response is None or response.get("status") not in ("OK", "ZERO_RESULTS"):
+    if response.status_code >= 400:
         return [], SearchError(category=category, reason="malformed_response")
 
-    results = response.get("results", [])
-    if not results:
+    try:
+        places = response.json().get("places", [])
+    except ValueError:
+        return [], SearchError(category=category, reason="malformed_response")
+
+    if not places:
         return [], SearchError(category=category, reason="empty_results")
 
     candidates = [
         Candidate(
-            id=place["place_id"],
+            id=place["id"],
             category=category,
-            name=place.get("name", "Unknown place"),
-            price=float(place.get("price_level", 2)) * 500,  # rough proxy, refined in Phase 2
+            name=place.get("displayName", {}).get("text", "Unknown place"),
+            price=PRICE_LEVEL_PROXY.get(place.get("priceLevel"), DEFAULT_PRICE_PROXY),
             rating=place.get("rating"),
-            review_count=place.get("user_ratings_total"),
+            review_count=place.get("userRatingCount"),
             metadata={"raw": place},
         )
-        for place in results
+        for place in places
     ]
     return candidates, None
 
@@ -248,8 +362,9 @@ def _cheapest_price(candidates: list[Candidate]) -> Optional[float]:
 
 
 async def run_search_agent(
-    origin: str,
-    destination: str,
+    origin_iata: str,
+    destination_iata: str,
+    destination_city: str,
     departure_date: str,
     return_date: str,
     budget_allocation: dict[str, float],
@@ -257,6 +372,13 @@ async def run_search_agent(
     """
     Flights first, then reallocate (or flag a conflict), then the
     remaining three categories concurrently.
+
+    origin_iata/destination_iata are airport codes (Duffel-specific).
+    destination_city is the human-readable name (e.g. "Tokyo", matching
+    UserInput.destination) used by Hotelbeds (resolved to its own
+    destination code internally) and Google Places. These are genuinely
+    different values, not redundant — Duffel, Hotelbeds, and Google Places
+    each use their own location identifier system.
 
     Returns (search_results, search_errors, conflicts) — plain data, no
     TripState coupling, so this stays unit-testable without constructing
@@ -267,7 +389,7 @@ async def run_search_agent(
     conflicts: list[Conflict] = []
 
     flight_candidates, flight_error = await search_flights(
-        origin, destination, departure_date, budget_allocation[FLIGHTS]
+        origin_iata, destination_iata, departure_date, budget_allocation[FLIGHTS]
     )
     search_results[FLIGHTS] = flight_candidates
     if flight_error:
@@ -311,10 +433,10 @@ async def run_search_agent(
             )
 
     hotel_task = search_hotels(
-        destination, departure_date, return_date, remaining_allocation[HOTELS]
+        destination_city, departure_date, return_date, remaining_allocation[HOTELS]
     )
-    food_task = search_food(destination, remaining_allocation[FOOD])
-    activity_task = search_activities(destination, remaining_allocation[ACTIVITIES])
+    food_task = search_food(destination_city, remaining_allocation[FOOD])
+    activity_task = search_activities(destination_city, remaining_allocation[ACTIVITIES])
 
     (hotel_candidates, hotel_error), (food_candidates, food_error), (
         activity_candidates,
