@@ -42,7 +42,7 @@ async def test_search_flights_returns_candidates_on_success():
     mock_response = _mock_response(200, {"data": {"offers": offers}})
 
     with patch("app.agents.search_agent._duffel_post", return_value=mock_response):
-        candidates, error = await search_flights("BLR", "HND", "2026-03-12", 50000)
+        candidates, error = await search_flights("BLR", "HND", "2026-03-12", "2026-03-19", 50000)
 
     assert error is None
     assert len(candidates) == 2
@@ -55,7 +55,7 @@ async def test_search_flights_empty_results():
     mock_response = _mock_response(200, {"data": {"offers": []}})
 
     with patch("app.agents.search_agent._duffel_post", return_value=mock_response):
-        candidates, error = await search_flights("BLR", "HND", "2026-03-12", 50000)
+        candidates, error = await search_flights("BLR", "HND", "2026-03-12", "2026-03-19", 50000)
 
     assert candidates == []
     assert error.category == FLIGHTS
@@ -67,7 +67,7 @@ async def test_search_flights_rate_limited():
     mock_response = _mock_response(429, {"errors": [{"title": "Too Many Requests"}]})
 
     with patch("app.agents.search_agent._duffel_post", return_value=mock_response):
-        candidates, error = await search_flights("BLR", "HND", "2026-03-12", 50000)
+        candidates, error = await search_flights("BLR", "HND", "2026-03-12", "2026-03-19", 50000)
 
     assert candidates == []
     assert error.reason == "rate_limited"
@@ -78,7 +78,7 @@ async def test_search_flights_server_error_is_malformed_response():
     mock_response = _mock_response(500, {"errors": [{"title": "Internal Server Error"}]})
 
     with patch("app.agents.search_agent._duffel_post", return_value=mock_response):
-        candidates, error = await search_flights("BLR", "HND", "2026-03-12", 50000)
+        candidates, error = await search_flights("BLR", "HND", "2026-03-12", "2026-03-19", 50000)
 
     assert error.reason == "malformed_response"
 
@@ -89,7 +89,7 @@ async def test_search_flights_network_error_is_malformed_response():
         "app.agents.search_agent._duffel_post",
         side_effect=httpx.ConnectError("connection failed"),
     ):
-        candidates, error = await search_flights("BLR", "HND", "2026-03-12", 50000)
+        candidates, error = await search_flights("BLR", "HND", "2026-03-12", "2026-03-19", 50000)
 
     assert candidates == []
     assert error.reason == "malformed_response"
@@ -299,20 +299,39 @@ async def test_search_food_api_error_is_malformed_response():
 
 @pytest.mark.asyncio
 async def test_underspent_flight_reallocates_leftover_to_other_categories():
+    """
+    Regression test: allocate_budget() always returns all four CATEGORIES
+    (flights included, at its 15% floor) regardless of which weights were
+    passed in. run_search_agent must extract only the three reallocated
+    categories, not blindly dict.update() the whole result — otherwise the
+    already-locked-in actual_flight_price silently gets clobbered back down
+    to a meaningless floor share. Asserting the actual budgets passed
+    downstream (not just that the call happened) is what catches this.
+    """
     budget_allocation = {FLIGHTS: 50000, HOTELS: 20000, FOOD: 15000, ACTIVITIES: 15000}
+    received_budgets = {}
 
     async def fake_search_flights(*args, **kwargs):
         from app.schemas.trip_state import Candidate
 
         return [Candidate(id="1", category=FLIGHTS, name="flight", price=30000.0)], None
 
-    async def fake_empty(*args, **kwargs):
+    async def fake_search_hotels(city_name, check_in, check_out, budget_amount):
+        received_budgets[HOTELS] = budget_amount
+        return [], None
+
+    async def fake_search_food(destination, budget_amount):
+        received_budgets[FOOD] = budget_amount
+        return [], None
+
+    async def fake_search_activities(destination, budget_amount):
+        received_budgets[ACTIVITIES] = budget_amount
         return [], None
 
     with patch("app.agents.search_agent.search_flights", fake_search_flights), patch(
-        "app.agents.search_agent.search_hotels", fake_empty
-    ), patch("app.agents.search_agent.search_food", fake_empty), patch(
-        "app.agents.search_agent.search_activities", fake_empty
+        "app.agents.search_agent.search_hotels", fake_search_hotels
+    ), patch("app.agents.search_agent.search_food", fake_search_food), patch(
+        "app.agents.search_agent.search_activities", fake_search_activities
     ):
         results, errors, conflicts = await run_search_agent(
             "BLR", "HND", "Tokyo", "2026-03-12", "2026-03-19", budget_allocation
@@ -320,6 +339,14 @@ async def test_underspent_flight_reallocates_leftover_to_other_categories():
 
     assert conflicts == []
     assert results[FLIGHTS][0].price == 30000.0
+    # 20000 leftover (50000 allocated - 30000 actual) redistributed across a
+    # 70000 pool (20000+15000+15000+20000), per allocate_budget()'s
+    # floor/ceiling logic on renormalized 0.4/0.3/0.3 weights -- these exact
+    # values were computed by calling the real allocate_budget(), not
+    # hand-derived, so this stays correct if its algorithm ever changes.
+    assert received_budgets[HOTELS] == pytest.approx(21700.0)
+    assert received_budgets[FOOD] == pytest.approx(18900.0)
+    assert received_budgets[ACTIVITIES] == pytest.approx(18900.0)
 
 
 @pytest.mark.asyncio

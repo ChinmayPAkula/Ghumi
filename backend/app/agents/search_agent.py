@@ -131,13 +131,14 @@ async def _places_post(json_body: dict, field_mask: str) -> httpx.Response:
 
 
 async def search_flights(
-    origin: str, destination: str, departure_date: str, budget_amount: float
+    origin: str, destination: str, departure_date: str, return_date: str, budget_amount: float
 ) -> tuple[list[Candidate], Optional[SearchError]]:
-    """Duffel offer request, one-way, single adult — cheapest offers first."""
+    """Duffel offer request, round trip, single adult — cheapest offers first."""
     body = {
         "data": {
             "slices": [
-                {"origin": origin, "destination": destination, "departure_date": departure_date}
+                {"origin": origin, "destination": destination, "departure_date": departure_date},
+                {"origin": destination, "destination": origin, "departure_date": return_date},
             ],
             "passengers": [{"type": "adult"}],
             "cabin_class": "economy",
@@ -163,16 +164,19 @@ async def search_flights(
     if not offers:
         return [], SearchError(category=FLIGHTS, reason="empty_results")
 
-    candidates = [
-        Candidate(
-            id=offer["id"],
-            category=FLIGHTS,
-            name=f"{origin} -> {destination}",
-            price=float(offer["total_amount"]),
-            metadata={"raw": offer},
-        )
-        for offer in offers
-    ]
+    try:
+        candidates = [
+            Candidate(
+                id=offer["id"],
+                category=FLIGHTS,
+                name=f"{origin} -> {destination}",
+                price=float(offer["total_amount"]),
+                metadata={"raw": offer},
+            )
+            for offer in offers
+        ]
+    except (KeyError, TypeError, ValueError):
+        return [], SearchError(category=FLIGHTS, reason="malformed_response")
     return candidates, None
 
 
@@ -298,8 +302,12 @@ def _cheapest_liteapi_rate(room_types: list[dict]) -> Optional[float]:
         for rate in room_type.get("rates", []):
             for total in rate.get("retailRate", {}).get("total", []):
                 amount = total.get("amount")
-                if amount is not None:
+                if amount is None:
+                    continue
+                try:
                     amounts.append(float(amount))
+                except (TypeError, ValueError):
+                    continue
     return min(amounts) if amounts else None
 
 
@@ -336,18 +344,21 @@ async def _search_places(
     if not places:
         return [], SearchError(category=category, reason="empty_results")
 
-    candidates = [
-        Candidate(
-            id=place["id"],
-            category=category,
-            name=place.get("displayName", {}).get("text", "Unknown place"),
-            price=PRICE_LEVEL_PROXY.get(place.get("priceLevel"), DEFAULT_PRICE_PROXY),
-            rating=place.get("rating"),
-            review_count=place.get("userRatingCount"),
-            metadata={"raw": place},
-        )
-        for place in places
-    ]
+    try:
+        candidates = [
+            Candidate(
+                id=place["id"],
+                category=category,
+                name=place.get("displayName", {}).get("text", "Unknown place"),
+                price=PRICE_LEVEL_PROXY.get(place.get("priceLevel"), DEFAULT_PRICE_PROXY),
+                rating=place.get("rating"),
+                review_count=place.get("userRatingCount"),
+                metadata={"raw": place},
+            )
+            for place in places
+        ]
+    except (KeyError, TypeError, ValueError):
+        return [], SearchError(category=category, reason="malformed_response")
     return candidates, None
 
 
@@ -397,7 +408,7 @@ async def run_search_agent(
     conflicts: list[Conflict] = []
 
     flight_candidates, flight_error = await search_flights(
-        origin_iata, destination_iata, departure_date, budget_allocation[FLIGHTS]
+        origin_iata, destination_iata, departure_date, return_date, budget_allocation[FLIGHTS]
     )
     search_results[FLIGHTS] = flight_candidates
     if flight_error:
@@ -419,9 +430,16 @@ async def run_search_agent(
             renormalized_weights = {
                 c: budget_allocation[c] / weight_sum for c in REALLOCATABLE_CATEGORIES
             }
+            # allocate_budget() always returns all four CATEGORIES (flights
+            # included, defaulted via .get(c, 0.0)) regardless of which
+            # weights were passed in — only pull out the three categories
+            # we actually redistributed, so this doesn't clobber the
+            # actual_flight_price we just locked in below with a meaningless
+            # floor share.
             reallocated = allocate_budget(new_pool, renormalized_weights)
             remaining_allocation[FLIGHTS] = actual_flight_price
-            remaining_allocation.update(reallocated)
+            for category in REALLOCATABLE_CATEGORIES:
+                remaining_allocation[category] = reallocated[category]
         elif delta < 0:
             # Overspent: flights are locked in, but we don't auto-resolve.
             # Record the conflict with concrete options for the (not yet
