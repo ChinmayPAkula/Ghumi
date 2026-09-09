@@ -208,6 +208,33 @@ async def resolve_country_code(city_name: str) -> Optional[str]:
     return None
 
 
+async def resolve_city_center(city_name: str) -> Optional[tuple[float, float]]:
+    """
+    City name -> (latitude, longitude) reference point, via the same
+    Places text search pattern as resolve_country_code(). Used by
+    ranking_agent as the "how close is this to the city center" anchor
+    for proximity_norm.
+    """
+    try:
+        response = await _places_post({"textQuery": city_name}, "places.location")
+    except httpx.RequestError:
+        return None
+    if response.status_code >= 400:
+        return None
+
+    try:
+        places = response.json().get("places", [])
+    except ValueError:
+        return None
+    if not places:
+        return None
+
+    location = places[0].get("location")
+    if not location or "latitude" not in location or "longitude" not in location:
+        return None
+    return (location["latitude"], location["longitude"])
+
+
 async def search_hotels(
     city_name: str, check_in: str, check_out: str, budget_amount: float
 ) -> tuple[list[Candidate], Optional[SearchError]]:
@@ -312,7 +339,8 @@ def _cheapest_liteapi_rate(room_types: list[dict]) -> Optional[float]:
 
 
 PLACES_FIELD_MASK = (
-    "places.id,places.displayName,places.rating,places.userRatingCount,places.priceLevel"
+    "places.id,places.displayName,places.rating,places.userRatingCount,"
+    "places.priceLevel,places.location"
 )
 
 

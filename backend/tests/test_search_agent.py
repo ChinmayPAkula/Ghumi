@@ -22,6 +22,7 @@ from app.agents.search_agent import (
     search_food,
     search_activities,
     resolve_country_code,
+    resolve_city_center,
     run_search_agent,
 )
 
@@ -128,6 +129,41 @@ async def test_resolve_country_code_no_places_returns_none():
         code = await resolve_country_code("Nowhereville")
 
     assert code is None
+
+
+# --- resolve_city_center (via Places) ---
+
+
+@pytest.mark.asyncio
+async def test_resolve_city_center_returns_lat_lng():
+    mock_response = _mock_response(
+        200, {"places": [{"location": {"latitude": 35.6762, "longitude": 139.6503}}]}
+    )
+
+    with patch("app.agents.search_agent._places_post", return_value=mock_response):
+        center = await resolve_city_center("Tokyo")
+
+    assert center == (35.6762, 139.6503)
+
+
+@pytest.mark.asyncio
+async def test_resolve_city_center_no_places_returns_none():
+    mock_response = _mock_response(200, {"places": []})
+
+    with patch("app.agents.search_agent._places_post", return_value=mock_response):
+        center = await resolve_city_center("Nowhereville")
+
+    assert center is None
+
+
+@pytest.mark.asyncio
+async def test_resolve_city_center_missing_location_returns_none():
+    mock_response = _mock_response(200, {"places": [{"displayName": {"text": "Tokyo"}}]})
+
+    with patch("app.agents.search_agent._places_post", return_value=mock_response):
+        center = await resolve_city_center("Tokyo")
+
+    assert center is None
 
 
 # --- search_hotels (LiteAPI) ---
