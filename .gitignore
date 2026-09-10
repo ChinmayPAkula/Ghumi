@@ -26,3 +26,4 @@ frontend/*.tsbuildinfo
 # --- Logs ---
 *.log
 backend/live_verification_results.txt
+backend/itinerary_live_test.txt
