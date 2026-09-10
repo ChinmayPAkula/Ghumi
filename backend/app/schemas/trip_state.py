@@ -22,6 +22,7 @@ VALID_STYLES = {
     "adventurous",
     "cultural",
     "food_focused",
+    "mix_of_all",
 }
 
 
@@ -67,8 +68,8 @@ class UserInput(BaseModel):
     def duration_within_range(cls, v: int) -> int:
         if v < 1:
             raise ValueError("Trip must be at least 1 day")
-        if v > 30:
-            raise ValueError("Trip can't be longer than 30 days")
+        if v > 50:
+            raise ValueError("Trip can't be longer than 50 days")
         return v
 
     @field_validator("style")

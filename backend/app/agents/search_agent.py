@@ -54,8 +54,12 @@ FLIGHTS = "flights"
 HOTELS = "hotels"
 FOOD = "food"
 ACTIVITIES = "activities"
+TRANSPORT = "transport"  # not searched here (no provider) -- itinerary_agent
+# reads this allocation to estimate local travel cost between the hotel
+# and each day's activities. Still flexes with the reallocation loop below
+# like hotels/food/activities, since it's not "locked in" the way flights are.
 
-REALLOCATABLE_CATEGORIES = (HOTELS, FOOD, ACTIVITIES)
+REALLOCATABLE_CATEGORIES = (HOTELS, FOOD, ACTIVITIES, TRANSPORT)
 
 RESOLUTION_OPTIONS = ["increase_budget", "compromise_equally", "compromise_specific"]
 

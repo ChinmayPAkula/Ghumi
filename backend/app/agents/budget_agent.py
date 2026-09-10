@@ -8,23 +8,25 @@ This file has two responsibilities per the architecture doc:
 from __future__ import annotations
 
 from langchain_groq import ChatGroq
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, ValidationError, model_validator
 
 from app.core.config import get_settings
 
-CATEGORIES = ("flights", "hotels", "food", "activities")
+CATEGORIES = ("flights", "hotels", "food", "activities", "transport")
 
-DEFAULT_WEIGHTS: dict[str, float] = {c: 0.25 for c in CATEGORIES}
+DEFAULT_WEIGHTS: dict[str, float] = {c: 1.0 / len(CATEGORIES) for c in CATEGORIES}
 
 PROMPT_TEMPLATE = """You are extracting trip-planning priority weights from a
 traveler's own words. Read what they wrote and output a weight from 0 to 1
-for each of these four categories: flights, hotels, food, activities.
+for each of these five categories: flights, hotels, food, activities,
+transport (local transport within the destination — taxis, trains, transfers
+between the hotel and activities, not the flight there).
 
 Rules:
-- The four weights must sum to 1.0.
+- The five weights must sum to 1.0.
 - If they emphasize one category, raise its weight and lower the others
   proportionally — don't just nudge it slightly.
-- If something isn't mentioned, keep it near its default share (0.25) rather
+- If something isn't mentioned, keep it near its default share (0.2) rather
   than dropping it to near-zero.
 
 Traveler's own words: "{text}"
@@ -41,10 +43,11 @@ class PriorityWeights(BaseModel):
     hotels: float = Field(ge=0.0, le=1.0)
     food: float = Field(ge=0.0, le=1.0)
     activities: float = Field(ge=0.0, le=1.0)
+    transport: float = Field(ge=0.0, le=1.0)
 
     @model_validator(mode="after")
     def weights_sum_to_one(self) -> "PriorityWeights":
-        total = self.flights + self.hotels + self.food + self.activities
+        total = self.flights + self.hotels + self.food + self.activities + self.transport
         if not (0.97 <= total <= 1.03):  # small float-arithmetic tolerance
             raise ValueError(f"Priority weights must sum to ~1.0, got {total}")
         return self
@@ -74,15 +77,28 @@ def parse_priority_weights(priorities_raw: str) -> dict[str, float]:
     Empty/blank input skips the LLM entirely and returns equal weights —
     no point spending a call on nothing, and it keeps the function fast
     and free for the common case of "user didn't type anything here."
+
+    The LLM's response is untrusted input (see PriorityWeights' docstring)
+    — five weights that sum to exactly 1.0 is a harder arithmetic ask than
+    four was, and live testing confirmed the model occasionally misses
+    (e.g. summing to 1.12 instead of 1.0). One retry, then fall back to
+    equal weights rather than letting a ValidationError crash the whole
+    trip-planning request over a formatting slip in one LLM call.
     """
     if not priorities_raw or not priorities_raw.strip():
         return dict(DEFAULT_WEIGHTS)
 
     structured_llm = _get_structured_llm()
-    result: PriorityWeights = structured_llm.invoke(
-        PROMPT_TEMPLATE.format(text=priorities_raw.strip())
-    )
-    return result.model_dump()
+    prompt = PROMPT_TEMPLATE.format(text=priorities_raw.strip())
+
+    for _ in range(2):  # one retry
+        try:
+            result: PriorityWeights = structured_llm.invoke(prompt)
+            return result.model_dump()
+        except ValidationError:
+            continue
+
+    return dict(DEFAULT_WEIGHTS)
 
 
 # Every category is guaranteed at least this share of the total budget,

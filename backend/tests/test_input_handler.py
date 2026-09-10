@@ -75,20 +75,20 @@ def test_duration_zero_rejected():
         })
 
 
-def test_duration_over_30_rejected():
-    with pytest.raises(ValidationError, match="longer than 30 days"):
+def test_duration_over_50_rejected():
+    with pytest.raises(ValidationError, match="longer than 50 days"):
         handle_input({
             "destination": "Tokyo",
             "budget_total": 50000,
-            "duration_days": 31,
+            "duration_days": 51,
         })
 
 
-def test_duration_boundary_30_allowed_31_rejected():
-    ok = handle_input({"destination": "Tokyo", "budget_total": 50000, "duration_days": 30})
-    assert ok.duration_days == 30
+def test_duration_boundary_50_allowed_51_rejected():
+    ok = handle_input({"destination": "Tokyo", "budget_total": 50000, "duration_days": 50})
+    assert ok.duration_days == 50
     with pytest.raises(ValidationError):
-        handle_input({"destination": "Tokyo", "budget_total": 50000, "duration_days": 31})
+        handle_input({"destination": "Tokyo", "budget_total": 50000, "duration_days": 51})
 
 
 def test_invalid_style_rejected():

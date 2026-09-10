@@ -17,6 +17,7 @@ from app.agents.search_agent import (
     HOTELS,
     FOOD,
     ACTIVITIES,
+    TRANSPORT,
     search_flights,
     search_hotels,
     search_food,
@@ -344,7 +345,13 @@ async def test_underspent_flight_reallocates_leftover_to_other_categories():
     to a meaningless floor share. Asserting the actual budgets passed
     downstream (not just that the call happened) is what catches this.
     """
-    budget_allocation = {FLIGHTS: 50000, HOTELS: 20000, FOOD: 15000, ACTIVITIES: 15000}
+    budget_allocation = {
+        FLIGHTS: 50000,
+        HOTELS: 20000,
+        FOOD: 15000,
+        ACTIVITIES: 15000,
+        TRANSPORT: 10000,
+    }
     received_budgets = {}
 
     async def fake_search_flights(*args, **kwargs):
@@ -375,14 +382,14 @@ async def test_underspent_flight_reallocates_leftover_to_other_categories():
 
     assert conflicts == []
     assert results[FLIGHTS][0].price == 30000.0
-    # 20000 leftover (50000 allocated - 30000 actual) redistributed across a
-    # 70000 pool (20000+15000+15000+20000), per allocate_budget()'s
-    # floor/ceiling logic on renormalized 0.4/0.3/0.3 weights -- these exact
-    # values were computed by calling the real allocate_budget(), not
-    # hand-derived, so this stays correct if its algorithm ever changes.
-    assert received_budgets[HOTELS] == pytest.approx(21700.0)
-    assert received_budgets[FOOD] == pytest.approx(18900.0)
-    assert received_budgets[ACTIVITIES] == pytest.approx(18900.0)
+    # 20000 leftover (50000 allocated - 30000 actual) redistributed across
+    # an 80000 pool (20000+15000+15000+10000+20000 leftover), per
+    # allocate_budget()'s floor/ceiling logic on renormalized weights --
+    # these exact values were computed by calling the real allocate_budget(),
+    # not hand-derived, so this stays correct if its algorithm ever changes.
+    assert received_budgets[HOTELS] == pytest.approx(18666.666666666664)
+    assert received_budgets[FOOD] == pytest.approx(17000.0)
+    assert received_budgets[ACTIVITIES] == pytest.approx(17000.0)
 
 
 @pytest.mark.asyncio

@@ -47,11 +47,11 @@ def test_negative_budget_returns_422_with_field_location():
     assert any(e["loc"][-1] == "budget_total" for e in errors)
 
 
-def test_duration_over_30_returns_422():
+def test_duration_over_50_returns_422():
     response = client.post("/api/trip/validate-input", json={
         "destination": "Ladakh",
         "budget_total": 40000,
-        "duration_days": 45,
+        "duration_days": 51,
     })
     assert response.status_code == 422
     errors = response.json()["detail"]
