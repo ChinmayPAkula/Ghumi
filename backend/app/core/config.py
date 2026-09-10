@@ -24,8 +24,16 @@ class Settings(BaseSettings):
     groq_api_key: str = ""
 
     # --- External data APIs ---
-    amadeus_client_id: str = ""
-    amadeus_client_secret: str = ""
+    # Amadeus's self-service portal was decommissioned 2026-07-17 (Enterprise
+    # API only now, not viable for this project) — replaced with Duffel
+    # (flights) and LiteAPI (hotels). Hotelbeds was tried for hotels first
+    # but its sandbox's very restrictive quota (a handful of calls before
+    # "Quota exceeded") made it impractical for active development —
+    # LiteAPI's sandbox allows 5 req/s, a genuinely usable limit.
+    duffel_api_key: str = ""
+    duffel_base_url: str = "https://api.duffel.com"
+    liteapi_key: str = ""
+    liteapi_base_url: str = "https://api.liteapi.travel/v3.0"
     google_places_api_key: str = ""
 
     # --- Observability ---

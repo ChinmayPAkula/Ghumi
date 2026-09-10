@@ -24,10 +24,14 @@ sentry-sdk[fastapi]
 python-dotenv
 
 # --- External APIs ---
-amadeus
-googlemaps
+# Flights (Duffel), hotels (Hotelbeds), and food/activities (Google Places
+# API New) are all called directly via httpx, no SDK needed. Amadeus is not
+# used — its self-service/test tier was decommissioned 2026-07-17
+# (Enterprise API only now). The legacy googlemaps SDK is not used either —
+# its places()/geocode() methods hit the old Places API, which isn't
+# enabled on an unbilled API key.
+httpx
 
 # --- Testing ---
 pytest
 pytest-asyncio
-httpx

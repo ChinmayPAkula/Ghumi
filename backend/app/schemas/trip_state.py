@@ -110,6 +110,13 @@ class SearchError(BaseModel):
 class Conflict(BaseModel):
     description: str
     affected_days: list[int] = Field(default_factory=list)
+    # Populated by search_agent when a locked-in flight price exceeds its
+    # budget_agent allocation. Resolution is deferred to the orchestrator's
+    # clarification interrupt (not yet wired) — search_agent only detects
+    # and describes the conflict, never resolves it itself.
+    category: Optional[str] = None
+    shortfall_amount: Optional[float] = None
+    resolution_options: list[str] = Field(default_factory=list)
 
 
 class DayPlan(BaseModel):
