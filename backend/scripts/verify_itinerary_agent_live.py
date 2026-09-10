@@ -40,13 +40,18 @@ async def main():
     center = await resolve_city_center(DESTINATION)
     ranked = rank_search_results(search_results, style="cultural", reference_location=center)
 
-    days = compose_itinerary(ranked, BUDGET_ALLOCATION, DURATION_DAYS, DESTINATION)
+    days, itinerary_conflicts = compose_itinerary(ranked, BUDGET_ALLOCATION, DURATION_DAYS, DESTINATION)
 
     for day in days:
         print(f"\n--- Day {day.day_number} ---")
         print(f"Summary: {day.summary}")
         for item in day.items:
             print(f"  [{item.category}] {item.name} (₹{item.price:.0f})")
+
+    if itinerary_conflicts:
+        print("\nConflicts:")
+        for c in itinerary_conflicts:
+            print(f"  - {c.description} (options: {c.resolution_options})")
 
 
 if __name__ == "__main__":

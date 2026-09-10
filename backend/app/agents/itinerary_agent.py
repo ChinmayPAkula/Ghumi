@@ -9,7 +9,8 @@ Two responsibilities, split per the LLM/code rule (PRD §5.2):
 
 Scope decided collaboratively (see conversation history) for this first
 pass:
-  - ONE hotel for the entire stay (the top-ranked one), not a different
+  - ONE hotel for the entire stay (the top-ranked one THAT FITS ITS BUDGET
+    ALLOCATION — see _select_hotel_within_budget below), not a different
     hotel per day. Proximity-based multi-hotel assignment was considered
     and explicitly deferred — it cascades into ranking_agent (geographic
     clustering of a day's activities) and budget_agent (inter-hotel
@@ -19,18 +20,33 @@ pass:
     top-ranked-first, no repeats until the shortlist is exhausted (then
     cycles). Real pacing/intensity curves (PRD Phase 2) are out of scope
     here — this is deliberately the simplest schedule that's still
-    realistic, not yet an optimized one.
+    realistic, not yet an optimized one. Per-item food/activity budget
+    checks are deliberately NOT done here either — a single meal rarely
+    approaches a whole category's total budget the way one hotel booking
+    can consume its entire category in one line item, so the acute
+    budget-accuracy risk is specifically the hotel pick.
   - Local transport has no searchable candidates (no provider), so its
     per-day budget share is represented as a synthetic placeholder
     ScoredCandidate in each day's items, rather than adding a new field
     to the existing DayPlan schema for a single number.
+
+Bug found and fixed after live-testing exposed it (see conversation
+history): search_agent's search functions accept a budget_amount
+parameter but never actually use it to filter results — so
+ranked_shortlist[HOTELS][0] could genuinely be a hotel several times over
+its budget allocation. _select_hotel_within_budget() below picks the
+top-ranked hotel that actually fits, falling back to the cheapest
+available (with a Conflict recorded) only if none do — the same
+detect-but-don't-silently-resolve pattern search_agent already uses for
+an overspent flight.
 """
 from __future__ import annotations
 
 from langchain_groq import ChatGroq
 
+from app.agents.search_agent import RESOLUTION_OPTIONS
 from app.core.config import get_settings
-from app.schemas.trip_state import Candidate, DayPlan, ScoredCandidate
+from app.schemas.trip_state import Conflict, DayPlan, ScoredCandidate
 
 HOTELS = "hotels"
 FOOD = "food"
@@ -69,18 +85,58 @@ def _transport_placeholder(day_number: int, per_day_amount: float) -> ScoredCand
     )
 
 
+def _select_hotel_within_budget(
+    hotel_list: list[ScoredCandidate], hotel_budget: float
+) -> tuple[ScoredCandidate | None, Conflict | None]:
+    """
+    Top-ranked hotel that actually fits its budget allocation — ranking
+    alone doesn't guarantee this, since search_agent's budget_amount
+    parameter is currently unused for actual filtering (see module
+    docstring). Falls back to the cheapest available hotel, with a
+    Conflict recorded, only if nothing in the shortlist fits — mirrors
+    search_agent's own overspent-flight handling: detect and describe,
+    don't silently resolve.
+    """
+    if not hotel_list:
+        return None, None
+
+    for hotel in hotel_list:
+        if hotel.price <= hotel_budget:
+            return hotel, None
+
+    cheapest = min(hotel_list, key=lambda h: h.price)
+    shortfall = cheapest.price - hotel_budget
+    conflict = Conflict(
+        description=(
+            f"Cheapest available hotel ({cheapest.name}, {cheapest.price:.2f}) exceeds "
+            f"its budget allocation ({hotel_budget:.2f}) by {shortfall:.2f}."
+        ),
+        category=HOTELS,
+        shortfall_amount=shortfall,
+        resolution_options=list(RESOLUTION_OPTIONS),
+    )
+    return cheapest, conflict
+
+
 def build_itinerary(
     ranked_shortlist: dict[str, list[ScoredCandidate]],
     budget_allocation: dict[str, float],
     duration_days: int,
-) -> list[DayPlan]:
+) -> tuple[list[DayPlan], list[Conflict]]:
     """
     Pure code: assembles day_number -> items for every day of the trip.
     Never calls an LLM — narrative text is added separately by
     write_day_narrative(), per the LLM/code split.
+
+    Returns (days, conflicts) — conflicts is currently only ever a single
+    hotel-overspend entry (or empty), same shape as search_agent's
+    run_search_agent() return, so callers can merge both into
+    TripState.conflicts uniformly.
     """
     hotel_list = ranked_shortlist.get(HOTELS, [])
-    hotel = hotel_list[0] if hotel_list else None
+    hotel_budget = budget_allocation.get(HOTELS, float("inf"))
+    hotel, hotel_conflict = _select_hotel_within_budget(hotel_list, hotel_budget)
+    conflicts = [hotel_conflict] if hotel_conflict else []
 
     meals = ranked_shortlist.get(FOOD, [])
     activities = ranked_shortlist.get(ACTIVITIES, [])
@@ -103,7 +159,7 @@ def build_itinerary(
 
         days.append(DayPlan(day_number=day_number, items=items))
 
-    return days
+    return days, conflicts
 
 
 NARRATIVE_PROMPT_TEMPLATE = """You are writing a short, warm day-plan summary
@@ -162,13 +218,13 @@ def compose_itinerary(
     budget_allocation: dict[str, float],
     duration_days: int,
     destination: str,
-) -> list[DayPlan]:
+) -> tuple[list[DayPlan], list[Conflict]]:
     """
     Full pipeline: build the schedule (code), then write each day's
     narrative (LLM). Kept separate from build_itinerary() so the
     code-only assembly stays independently testable without touching Groq.
     """
-    days = build_itinerary(ranked_shortlist, budget_allocation, duration_days)
+    days, conflicts = build_itinerary(ranked_shortlist, budget_allocation, duration_days)
     for day in days:
         day.summary = write_day_narrative(day, destination)
-    return days
+    return days, conflicts
