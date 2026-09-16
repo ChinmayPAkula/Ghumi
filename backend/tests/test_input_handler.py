@@ -101,6 +101,45 @@ def test_invalid_style_rejected():
         })
 
 
+def test_hotel_star_preference_within_range_accepted():
+    ok = handle_input({
+        "destination": "Tokyo",
+        "budget_total": 50000,
+        "duration_days": 5,
+        "hotel_star_preference": 4,
+    })
+    assert ok.hotel_star_preference == 4
+
+
+def test_hotel_star_preference_out_of_range_rejected():
+    with pytest.raises(ValidationError, match="between 1 and 5"):
+        handle_input({
+            "destination": "Tokyo",
+            "budget_total": 50000,
+            "duration_days": 5,
+            "hotel_star_preference": 6,
+        })
+
+
+def test_hotel_star_preference_zero_rejected():
+    with pytest.raises(ValidationError, match="between 1 and 5"):
+        handle_input({
+            "destination": "Tokyo",
+            "budget_total": 50000,
+            "duration_days": 5,
+            "hotel_star_preference": 0,
+        })
+
+
+def test_hotel_star_preference_omitted_defaults_to_none():
+    ok = handle_input({
+        "destination": "Tokyo",
+        "budget_total": 50000,
+        "duration_days": 5,
+    })
+    assert ok.hotel_star_preference is None
+
+
 def test_valid_style_accepted():
     result = handle_input({
         "destination": "Tokyo",

@@ -11,6 +11,10 @@ providers were wired in search_agent (decided collaboratively, not
 unilaterally — see conversation history):
   - rating_norm, review_count_norm, proximity_norm, style_match — used
     for hotels/food/activities.
+  - star_match — hotels only, a SOFT preference (not a hard filter,
+    decided collaboratively) toward a user-requested star rating.
+    LiteAPI's /data/hotels response already includes real "stars" data,
+    confirmed live, so this is zero extra cost to compute.
   - recency_norm DROPPED ENTIRELY: no provider we use exposes a
     listing-freshness/review-recency signal without a separate, far more
     expensive per-candidate "details" call. Faking it with a constant
@@ -151,17 +155,58 @@ def _style_match_score(candidate: Candidate, category: str, style: Optional[str]
     return 1.0 if any(kw in name for kw in keywords) else 0.3
 
 
+def _extract_star_rating(candidate: Candidate) -> Optional[int]:
+    """
+    LiteAPI's /data/hotels response includes a real "stars" field (1-5),
+    already stashed in metadata by search_agent — confirmed live, not
+    guessed. Food/activities (Google Places) have no equivalent concept.
+    """
+    raw = candidate.metadata.get("raw")
+    if not isinstance(raw, dict):
+        return None
+    hotel = raw.get("hotel")
+    if isinstance(hotel, dict) and "stars" in hotel:
+        try:
+            return int(hotel["stars"])
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def _star_preference_score(candidate: Candidate, star_preference: Optional[int]) -> float:
+    """
+    Soft preference, not a hard filter (decided collaboratively — see
+    conversation history): exact match scores highest, each star of
+    difference reduces the score, floors at 0.0 rather than going
+    negative. No preference set, or no star data on this candidate,
+    scores neutral (0.5) so it neither helps nor hurts.
+    """
+    if star_preference is None:
+        return 0.5
+    stars = _extract_star_rating(candidate)
+    if stars is None:
+        return 0.5
+    diff = abs(stars - star_preference)
+    return max(0.0, 1.0 - diff * 0.25)
+
+
 def score_places(
     candidates: list[Candidate],
     category: str,
     style: Optional[str] = None,
     reference_location: Optional[tuple[float, float]] = None,
+    star_preference: Optional[int] = None,
 ) -> list[ScoredCandidate]:
     """
     Weighted-sum scoring for hotels/food/activities. Returns
     ScoredCandidates sorted highest-score-first. Every normalization is
     computed within this candidate list (there's no universal "good"
     rating/distance threshold across different searches).
+
+    star_preference only ever applies to hotels (food/activities have no
+    star-rating concept) — a soft preference folded into the weighted
+    sum, not a hard filter, so a within-budget hotel of the "wrong" star
+    rating still outranks an over-budget one of the "right" rating.
     """
     if not candidates:
         return []
@@ -182,8 +227,6 @@ def score_places(
         # entirely and redistribute its weight, rather than silently
         # scoring everyone as "equally close."
         del weights["proximity_norm"]
-        total = sum(weights.values())
-        weights = {k: v / total for k, v in weights.items()}
         proximity_norms = [0.0] * len(candidates)
     else:
         distances = [
@@ -195,6 +238,14 @@ def score_places(
         # worst-case distance rather than penalizing the whole search.
         filled = [d if d is not None else max_known for d in distances]
         proximity_norms = [1.0 - n for n in _normalize(filled)]
+
+    star_scores = [0.0] * len(candidates)
+    if category == HOTELS and star_preference is not None:
+        weights["star_match"] = 0.25
+        star_scores = [_star_preference_score(c, star_preference) for c in candidates]
+
+    total_weight = sum(weights.values())
+    weights = {k: v / total_weight for k, v in weights.items()}
 
     scored = []
     for i, candidate in enumerate(candidates):
@@ -209,6 +260,7 @@ def score_places(
             + weights.get("review_count_norm", 0.0) * review_count_norms[i]
             + weights.get("proximity_norm", 0.0) * proximity_norms[i]
             + weights.get("style_match", 0.0) * style_score
+            + weights.get("star_match", 0.0) * star_scores[i]
         )
         scored.append(ScoredCandidate(**candidate.model_dump(), score=score))
 
@@ -263,13 +315,16 @@ def rank_search_results(
     search_results: dict[str, list[Candidate]],
     style: Optional[str] = None,
     reference_location: Optional[tuple[float, float]] = None,
+    hotel_star_preference: Optional[int] = None,
 ) -> dict[str, list[ScoredCandidate]]:
     """Applies the right scorer per category. Flights never use style/
-    location (Duffel gives neither), places do."""
+    location (Duffel gives neither), places do. hotel_star_preference only
+    ever reaches score_places() for the hotels category."""
     ranked: dict[str, list[ScoredCandidate]] = {}
     for category, candidates in search_results.items():
         if category == FLIGHTS:
             ranked[category] = score_flights(candidates)
         else:
-            ranked[category] = score_places(candidates, category, style, reference_location)
+            star_pref = hotel_star_preference if category == HOTELS else None
+            ranked[category] = score_places(candidates, category, style, reference_location, star_pref)
     return ranked

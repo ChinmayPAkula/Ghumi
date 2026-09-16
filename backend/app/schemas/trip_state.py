@@ -43,6 +43,14 @@ class UserInput(BaseModel):
     duration_days: int
     priorities_raw: str = Field(default="", max_length=500)  # free text, e.g. "I care more about food"
     style: Optional[str] = None              # hidden_gems / popular / relaxed / adventurous / cultural / food_focused
+    hotel_star_preference: Optional[int] = None  # 1-5, soft preference not a hard filter (ranking_agent)
+
+    @field_validator("hotel_star_preference")
+    @classmethod
+    def star_preference_in_range(cls, v: Optional[int]) -> Optional[int]:
+        if v is not None and not (1 <= v <= 5):
+            raise ValueError("Hotel star preference must be between 1 and 5")
+        return v
 
     @field_validator("destination")
     @classmethod

@@ -6,6 +6,8 @@ import pytest
 
 from app.agents.ranking_agent import (
     _normalize,
+    _extract_star_rating,
+    _star_preference_score,
     score_places,
     score_flights,
     rank_search_results,
@@ -38,6 +40,21 @@ def _flight(id, price, airline_code=None):
     if airline_code:
         raw["owner"] = {"iata_code": airline_code}
     return Candidate(id=id, category=FLIGHTS, name=f"flight {id}", price=price, metadata={"raw": raw})
+
+
+def _hotel(id, name, rating=None, review_count=None, stars=None):
+    raw = {}
+    if stars is not None:
+        raw["hotel"] = {"stars": stars}
+    return Candidate(
+        id=id,
+        category=HOTELS,
+        name=name,
+        price=10000.0,
+        rating=rating,
+        review_count=review_count,
+        metadata={"raw": raw},
+    )
 
 
 # --- _normalize ---
@@ -137,6 +154,81 @@ def test_score_places_partial_missing_coordinates_does_not_crash():
     ]
     scored = score_places(candidates, FOOD, reference_location=tokyo_center)
     assert len(scored) == 2
+
+
+# --- star_match: hotel star preference (soft, decided collaboratively) ---
+
+
+def test_extract_star_rating_reads_from_metadata():
+    hotel = _hotel("h1", "Some Hotel", stars=4)
+    assert _extract_star_rating(hotel) == 4
+
+
+def test_extract_star_rating_missing_returns_none():
+    hotel = _hotel("h1", "Some Hotel")  # no stars set
+    assert _extract_star_rating(hotel) is None
+
+
+def test_star_preference_score_exact_match_scores_highest():
+    hotel = _hotel("h1", "4-star hotel", stars=4)
+    assert _star_preference_score(hotel, star_preference=4) == 1.0
+
+
+def test_star_preference_score_decreases_with_distance():
+    hotel_3star = _hotel("h1", "3-star", stars=3)
+    hotel_1star = _hotel("h2", "1-star", stars=1)
+    score_close = _star_preference_score(hotel_3star, star_preference=4)
+    score_far = _star_preference_score(hotel_1star, star_preference=4)
+    assert score_close > score_far
+
+
+def test_star_preference_score_no_preference_is_neutral():
+    hotel = _hotel("h1", "Any hotel", stars=2)
+    assert _star_preference_score(hotel, star_preference=None) == 0.5
+
+
+def test_star_preference_score_no_data_is_neutral():
+    hotel = _hotel("h1", "Unknown stars")  # no stars field
+    assert _star_preference_score(hotel, star_preference=4) == 0.5
+
+
+def test_score_places_star_preference_boosts_matching_hotel_soft():
+    """
+    Soft preference: the matching-star hotel ranks higher, but this is a
+    ranking nudge via score_places' weighted sum, not a hard filter —
+    both hotels are still returned.
+    """
+    hotels = [
+        _hotel("h1", "2-star hotel", rating=4.0, review_count=100, stars=2),
+        _hotel("h2", "4-star hotel", rating=4.0, review_count=100, stars=4),
+    ]
+    scored = score_places(hotels, HOTELS, star_preference=4)
+    assert len(scored) == 2  # both still present, not filtered out
+    assert scored[0].id == "h2"
+
+
+def test_score_places_star_preference_only_applies_to_hotels():
+    # A "preference" passed for a non-hotel category should have no effect
+    # -- it's ignored, not silently applied to food/activities.
+    candidates = [
+        _place("a", "Place A", rating=3.0, review_count=100),
+        _place("b", "Place B", rating=4.0, review_count=100),
+    ]
+    scored = score_places(candidates, FOOD, star_preference=5)
+    assert scored[0].id == "b"  # ranked purely on rating, as if no preference given
+
+
+def test_rank_search_results_hotel_star_preference_only_reaches_hotels():
+    search_results = {
+        HOTELS: [
+            _hotel("h1", "2-star", rating=4.0, review_count=50, stars=2),
+            _hotel("h2", "5-star", rating=4.0, review_count=50, stars=5),
+        ],
+        FOOD: [_place("f1", "Cafe", rating=4.0, review_count=50)],
+    }
+    ranked = rank_search_results(search_results, hotel_star_preference=5)
+    assert ranked[HOTELS][0].id == "h2"
+    assert len(ranked[FOOD]) == 1  # food scoring unaffected, no crash
 
 
 # --- score_places: style_match ---
