@@ -31,6 +31,9 @@ deliberate scope boundary, not an oversight.
 """
 from __future__ import annotations
 
+from functools import lru_cache
+
+from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import StateGraph, START, END
 from langgraph.types import interrupt
 
@@ -215,3 +218,16 @@ def compile_graph(checkpointer=None):
     once that infra decision is made (PRD Phase 4).
     """
     return build_graph().compile(checkpointer=checkpointer)
+
+
+@lru_cache
+def get_compiled_graph():
+    """
+    Process-wide singleton, used by the API layer (app/api/trip.py).
+    InMemorySaver only persists within this process's memory -- fine for
+    dev/demo scale (matches TechStack.docx §3.1's "no task queue for v1"
+    decision: synchronous request/response, no durable job infra yet).
+    Swap for a real persistent checkpointer before Phase 4 deployment,
+    where a restart shouldn't lose an in-progress paused run.
+    """
+    return compile_graph(checkpointer=InMemorySaver())

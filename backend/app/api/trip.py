@@ -1,14 +1,21 @@
 """
-Trip API routes — Phase 1: just the input-handling endpoint.
-Per Ghumi_Agent_Architecture_Spec.docx §3.1 / §6.
+Trip API routes. Per Ghumi_Agent_Architecture_Spec.docx §3.1 / §6.
 
-More routes (start planning run, get status, submit clarification answer)
-get added here as later agents/nodes come online — this file grows with
-the graph, not ahead of it.
+/validate-input: Phase 1's original field-validation-only endpoint, kept
+as-is for the PlanPage's live inline validation.
+/plan + /plan/{run_id}/resume: triggers the actual orchestrator.py graph.
+Synchronous (awaits the full graph run before responding) — matches
+TechStack.docx §3.1's "no task queue for v1" decision.
 """
-from fastapi import APIRouter
+from typing import Literal, Optional
+from uuid import uuid4
 
-from app.schemas.trip_state import UserInput
+from fastapi import APIRouter, HTTPException
+from langgraph.types import Command
+from pydantic import BaseModel
+
+from app.agents.orchestrator import get_compiled_graph
+from app.schemas.trip_state import Conflict, DayPlan, TripState, UserInput
 
 router = APIRouter(prefix="/trip", tags=["trip"])
 
@@ -29,3 +36,84 @@ def validate_input(payload: UserInput) -> UserInput:
     what was actually understood before moving on.
     """
     return payload
+
+
+class ClarificationInfo(BaseModel):
+    stage: str
+    clarification_needed: Optional[str] = None
+    conflicts: list[Conflict] = []
+
+
+class PlanResult(BaseModel):
+    run_id: str
+    status: Literal["completed", "needs_clarification"]
+    itinerary: list[DayPlan] = []
+    budget_allocation: dict[str, float] = {}
+    conflicts: list[Conflict] = []
+    clarification: Optional[ClarificationInfo] = None
+
+
+class ResumePayload(BaseModel):
+    choice: str  # one of Conflict.resolution_options, or free text acknowledgment
+
+
+def _build_plan_result(run_id: str, graph_output: dict) -> PlanResult:
+    interrupts = graph_output.get("__interrupt__")
+    if interrupts:
+        payload = interrupts[0].value
+        return PlanResult(
+            run_id=run_id,
+            status="needs_clarification",
+            budget_allocation=graph_output.get("budget_allocation", {}),
+            conflicts=graph_output.get("conflicts", []),
+            clarification=ClarificationInfo(
+                stage=payload.get("stage", "unknown"),
+                clarification_needed=payload.get("clarification_needed"),
+                conflicts=[Conflict(**c) for c in payload.get("conflicts", [])],
+            ),
+        )
+    return PlanResult(
+        run_id=run_id,
+        status="completed",
+        itinerary=graph_output.get("itinerary", []),
+        budget_allocation=graph_output.get("budget_allocation", {}),
+        conflicts=graph_output.get("conflicts", []),
+    )
+
+
+@router.post("/plan", response_model=PlanResult)
+async def plan_trip(payload: UserInput) -> PlanResult:
+    """
+    Runs the full orchestrator graph (budget -> search -> ranking ->
+    itinerary) for one trip. May come back as status="needs_clarification"
+    if a budget conflict was found (see orchestrator.py's checkpointed
+    interrupts) -- resume via POST /plan/{run_id}/resume with the user's
+    chosen resolution_option.
+    """
+    run_id = str(uuid4())
+    initial_state = TripState(run_id=run_id, user_input=payload)
+    config = {"configurable": {"thread_id": run_id}}
+
+    graph = get_compiled_graph()
+    result = await graph.ainvoke(initial_state, config=config)
+    return _build_plan_result(run_id, result)
+
+
+@router.post("/plan/{run_id}/resume", response_model=PlanResult)
+async def resume_trip(run_id: str, payload: ResumePayload) -> PlanResult:
+    """
+    Resumes a paused run. First-pass scope (see orchestrator.py's module
+    docstring): resuming acknowledges the conflict and continues with
+    whatever was already selected -- it does not yet renegotiate budget
+    or propose alternatives (that's PRD Phase 2's "conflict-aware
+    replanning"). A run_id from a completed or unknown run 404s.
+    """
+    config = {"configurable": {"thread_id": run_id}}
+    graph = get_compiled_graph()
+
+    state = await graph.aget_state(config)
+    if state is None or not state.next:
+        raise HTTPException(status_code=404, detail="No paused run found for this run_id")
+
+    result = await graph.ainvoke(Command(resume=payload.choice), config=config)
+    return _build_plan_result(run_id, result)
