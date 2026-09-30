@@ -1,4 +1,5 @@
 import { useState, type FormEvent } from 'react'
+import { Link } from 'react-router-dom'
 import {
   postTripPlan,
   resumeTripPlan,
@@ -6,6 +7,8 @@ import {
   type FieldError,
   type PlanResult,
 } from '../lib/api'
+import { saveTrip } from '../lib/savedTrips'
+import ItineraryView from '../components/ItineraryView'
 
 const STYLES = [
   { value: 'hidden_gems', label: 'Hidden gems' },
@@ -20,6 +23,7 @@ const RESOLUTION_LABELS: Record<string, string> = {
   increase_budget: 'Increase the budget for this',
   compromise_equally: 'Trim other categories equally to cover it',
   compromise_specific: 'Trim a specific category to cover it',
+  proceed_without_hotel: 'Continue without a hotel',
 }
 
 export default function PlanPage() {
@@ -36,6 +40,7 @@ export default function PlanPage() {
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({})
   const [submitting, setSubmitting] = useState(false)
   const [plan, setPlan] = useState<PlanResult | null>(null)
+  const [saved, setSaved] = useState(false)
 
   function buildPayload() {
     return {
@@ -71,6 +76,7 @@ export default function PlanPage() {
     try {
       const result = await postTripPlan(buildPayload())
       setPlan(result)
+      setSaved(false)
     } catch (err) {
       if (err instanceof ValidationApiError) {
         mapValidationError(err)
@@ -142,57 +148,42 @@ export default function PlanPage() {
   }
 
   if (plan?.status === 'completed') {
+    const tripDestination = destination || 'Your trip'
     return (
       <div className="min-h-screen bg-paper px-6 py-16">
-        <div className="max-w-2xl mx-auto">
-          <span className="block font-mono text-[11px] tracking-wider text-brass uppercase mb-2">
-            Your itinerary
-          </span>
-          <h1 className="font-display font-semibold text-3xl text-ink mb-8">
-            {destination || 'Your trip'}
-          </h1>
-
-          {plan.conflicts.length > 0 && (
-            <div className="mb-8 space-y-2">
-              {plan.conflicts.map((c, i) => (
-                <p
-                  key={i}
-                  className="text-sm text-route bg-route/5 border border-route/20 rounded-lg px-4 py-3"
-                >
-                  {c.description}
-                </p>
-              ))}
-            </div>
-          )}
-
-          <div className="space-y-8">
-            {plan.itinerary.map((day) => (
-              <div key={day.day_number} className="bg-white border border-line rounded-xl p-6">
-                <span className="block font-mono text-[10px] tracking-wider text-muted uppercase mb-2">
-                  Day {day.day_number}
-                </span>
-                <p className="text-ink font-body mb-4">{day.summary}</p>
-                <div className="space-y-2 border-t border-line pt-4">
-                  {day.items.map((item) => (
-                    <div key={item.id} className="flex justify-between text-sm">
-                      <span className="text-muted font-mono text-[10px] uppercase mr-3 mt-0.5">
-                        {item.category}
-                      </span>
-                      <span className="text-ink flex-1">{item.name}</span>
-                      <span className="text-muted font-mono ml-3">₹{Math.round(item.price)}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            ))}
-          </div>
-
+        <ItineraryView
+          destination={tripDestination}
+          itinerary={plan.itinerary}
+          conflicts={plan.conflicts}
+        />
+        <div className="max-w-2xl mx-auto mt-10 flex items-center gap-6">
           <button
-            onClick={() => setPlan(null)}
-            className="mt-10 text-sm text-muted hover:text-ink underline"
+            onClick={() => {
+              saveTrip({
+                destination: tripDestination,
+                itinerary: plan.itinerary,
+                budgetAllocation: plan.budget_allocation,
+                conflicts: plan.conflicts,
+              })
+              setSaved(true)
+            }}
+            disabled={saved}
+            className="bg-brand hover:bg-brand/90 disabled:opacity-50 text-paper font-mono text-xs tracking-wider uppercase px-6 py-3 rounded-full transition-colors"
+          >
+            {saved ? 'Saved' : 'Save trip'}
+          </button>
+          <button
+            onClick={() => {
+              setPlan(null)
+              setSaved(false)
+            }}
+            className="text-sm text-muted hover:text-ink underline"
           >
             Plan another trip
           </button>
+          <Link to="/trips" className="text-sm text-muted hover:text-ink underline">
+            My trips
+          </Link>
         </div>
       </div>
     )
