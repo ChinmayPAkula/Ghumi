@@ -134,10 +134,19 @@ def test_select_hotel_within_budget_falls_back_to_cheapest_with_conflict():
     assert len(conflict.resolution_options) == 3
 
 
-def test_select_hotel_within_budget_empty_list_returns_none_none():
+def test_select_hotel_within_budget_empty_list_raises_conflict_not_silent():
+    """
+    Regression test: an empty hotel_list (e.g. search_agent found zero
+    hotels for a too-broad destination like a state name) used to return
+    silently -- no hotel, no conflict, the itinerary just vanished the
+    hotel line item with zero explanation. That's a real bug found by
+    live use: it must now be visible, mirroring the over-budget case.
+    """
     hotel, conflict = _select_hotel_within_budget([], hotel_budget=20000.0)
     assert hotel is None
-    assert conflict is None
+    assert conflict is not None
+    assert conflict.category == HOTELS
+    assert conflict.resolution_options == ["proceed_without_hotel"]
 
 
 def test_build_itinerary_hotel_over_budget_top_choice_is_skipped():
@@ -184,11 +193,13 @@ def test_build_itinerary_no_hotel_budget_key_treats_as_unlimited():
 # --- build_itinerary: missing data doesn't crash ---
 
 
-def test_build_itinerary_no_hotel_available_skips_it_gracefully():
+def test_build_itinerary_no_hotel_available_skips_it_but_flags_conflict():
     shortlist = _shortlist(n_hotels=0)
     days, conflicts = build_itinerary(shortlist, {TRANSPORT: 5000}, duration_days=2)
     for day in days:
         assert not any(i.category == HOTELS for i in day.items)
+    assert len(conflicts) == 1
+    assert conflicts[0].category == HOTELS
 
 
 def test_build_itinerary_no_food_or_activities_still_produces_days():
@@ -206,6 +217,10 @@ def test_build_itinerary_empty_shortlist_entirely():
     # only the transport placeholder should exist
     assert len(days[0].items) == 1
     assert days[0].items[0].category == TRANSPORT
+    # empty HOTELS list now correctly flags a conflict rather than
+    # silently vanishing the hotel line item
+    assert len(conflicts) == 1
+    assert conflicts[0].category == HOTELS
 
 
 # --- write_day_narrative ---

@@ -56,6 +56,11 @@ TRANSPORT = "transport"
 MEALS_PER_DAY = 3
 ACTIVITIES_PER_DAY = 1
 
+# Distinct from search_agent.RESOLUTION_OPTIONS (increase_budget/
+# compromise_*) -- those are budget-fit fixes, meaningless here since
+# there's no price to negotiate against when zero hotels exist at all.
+NO_HOTELS_FOUND_OPTIONS = ["proceed_without_hotel"]
+
 
 def _cycle(items: list[ScoredCandidate], count: int, start: int) -> tuple[list[ScoredCandidate], int]:
     """
@@ -98,7 +103,23 @@ def _select_hotel_within_budget(
     don't silently resolve.
     """
     if not hotel_list:
-        return None, None
+        # No hotels came back from search_agent at all -- distinct from
+        # "over budget": there's nothing to pick from, likely because the
+        # destination text was too broad (e.g. "Assam", a state, rather
+        # than a city LiteAPI can actually search). Surfacing this as a
+        # Conflict too, instead of silently vanishing from the itinerary
+        # (the prior behavior -- a real bug caught by live use), keeps the
+        # same "detect and describe, don't silently drop it" rule the
+        # over-budget case already follows.
+        conflict = Conflict(
+            description=(
+                "No hotels were found for this destination. Try a more "
+                "specific city name (e.g. a city rather than a state/region)."
+            ),
+            category=HOTELS,
+            resolution_options=list(NO_HOTELS_FOUND_OPTIONS),
+        )
+        return None, conflict
 
     for hotel in hotel_list:
         if hotel.price <= hotel_budget:

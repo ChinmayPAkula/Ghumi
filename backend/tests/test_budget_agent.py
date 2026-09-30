@@ -90,7 +90,7 @@ def test_llm_succeeds_on_retry_after_one_failure():
     with patch("app.agents.budget_agent._get_structured_llm", return_value=mock_structured_llm):
         result = parse_priority_weights("some real text")
 
-    assert result == DEFAULT_WEIGHTS  # equal weights, but came from the LLM this time
+    assert result == good_response.model_dump()  # whatever the LLM said on its 2nd try
     assert mock_structured_llm.invoke.call_count == 2
 
 
@@ -110,10 +110,14 @@ def test_allocate_budget_sums_to_total():
     assert sum(result.values()) == pytest.approx(100000)
 
 
-def test_allocate_budget_equal_weights_gives_equal_amounts():
+def test_allocate_budget_default_weights_gives_transport_a_smaller_share():
+    # DEFAULT_WEIGHTS is no longer uniform: transport defaults lower
+    # (0.10) than the other four (0.225 each) -- see TRANSPORT_DEFAULT_WEIGHT.
     result = allocate_budget(100000, DEFAULT_WEIGHTS)
-    for category, amount in result.items():
-        assert amount == pytest.approx(20000)  # 100000 / 5 categories
+    for category in ("flights", "hotels", "food", "activities"):
+        assert result[category] == pytest.approx(22875.0)
+    assert result["transport"] == pytest.approx(8500.0)
+    assert result["transport"] < result["flights"]
 
 
 def test_allocate_budget_zero_weight_still_gets_floor():
@@ -123,6 +127,20 @@ def test_allocate_budget_zero_weight_still_gets_floor():
     assert result["food"] == pytest.approx(expected_floor)
     assert result["activities"] == pytest.approx(expected_floor)
     assert sum(result.values()) == pytest.approx(100000)
+
+
+def test_allocate_budget_transport_zero_weight_gets_its_own_lower_floor():
+    """
+    Regression test: transport's floor (5%) is deliberately lower than
+    every other category's (15%) -- a zero-weighted transport should NOT
+    get the same floor as a zero-weighted hotels/food/activities.
+    """
+    from app.agents.budget_agent import TRANSPORT_MIN_FLOOR
+
+    weights = {"flights": 0.5, "hotels": 0.5, "food": 0.0, "activities": 0.0, "transport": 0.0}
+    result = allocate_budget(100000, weights)
+    assert result["transport"] == pytest.approx(100000 * TRANSPORT_MIN_FLOOR)
+    assert result["transport"] < result["food"]  # food still gets the higher 15% floor
 
 
 def test_allocate_budget_heavily_weighted_category_respects_ceiling():
@@ -142,16 +160,16 @@ def test_allocate_budget_extreme_single_category_hits_ceiling_not_100_percent():
     """
     The case that motivated adding a ceiling at all: if the LLM (or a
     contrived input) puts ALL weight on one category, that category
-    should NOT get the entire budget — it should cap well under 100%
-    (40% here, since floors across 5 categories eat more of the pool
-    than the old 4-category math did), and the other categories split
-    the rest at their floor.
+    should NOT get the entire budget — it should cap at the 50% ceiling,
+    and the other categories split the rest at their own floor (15% for
+    hotels/food/activities, transport's lower 5% floor).
     """
     weights = {"flights": 1.0, "hotels": 0.0, "food": 0.0, "activities": 0.0}
     result = allocate_budget(100000, weights)
-    assert result["flights"] == pytest.approx(40000)
-    for category in ("hotels", "food", "activities", "transport"):
-        assert result[category] >= 15000 - 0.01
+    assert result["flights"] == pytest.approx(50000)
+    for category in ("hotels", "food", "activities"):
+        assert result[category] == pytest.approx(15000)
+    assert result["transport"] == pytest.approx(5000)
     assert sum(result.values()) == pytest.approx(100000)
 
 

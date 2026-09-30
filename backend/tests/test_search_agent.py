@@ -449,9 +449,10 @@ async def test_underspent_flight_reallocates_leftover_to_other_categories():
     # allocate_budget()'s floor/ceiling logic on renormalized weights --
     # these exact values were computed by calling the real allocate_budget(),
     # not hand-derived, so this stays correct if its algorithm ever changes.
-    assert received_budgets[HOTELS] == pytest.approx(18666.666666666664)
-    assert received_budgets[FOOD] == pytest.approx(17000.0)
-    assert received_budgets[ACTIVITIES] == pytest.approx(17000.0)
+    # (Transport's lower 5% floor vs. 15% for the rest is baked into these.)
+    assert received_budgets[HOTELS] == pytest.approx(21333.333333333332)
+    assert received_budgets[FOOD] == pytest.approx(19000.0)
+    assert received_budgets[ACTIVITIES] == pytest.approx(19000.0)
 
 
 @pytest.mark.asyncio
