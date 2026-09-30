@@ -6,16 +6,22 @@ cycle), unlike test_input_handler.py which tests UserInput/handle_input
 directly. Both matter: this file proves the wiring works, that file proves
 the validation logic works.
 """
+from datetime import date, timedelta
+
 from fastapi.testclient import TestClient
 
 from app.main import app
 
 client = TestClient(app)
 
+FUTURE_DATE = (date.today() + timedelta(days=30)).isoformat()
+
 
 def test_valid_input_returns_200_with_normalized_data():
     response = client.post("/api/trip/validate-input", json={
         "destination": "  paris  ",
+        "origin": "Bangalore",
+        "start_date": FUTURE_DATE,
         "budget_total": 90000,
         "duration_days": 6,
         "style": "cultural",
@@ -29,6 +35,8 @@ def test_valid_input_returns_200_with_normalized_data():
 def test_surprise_me_without_destination_returns_200():
     response = client.post("/api/trip/validate-input", json={
         "surprise_me": True,
+        "origin": "Bangalore",
+        "start_date": FUTURE_DATE,
         "budget_total": 60000,
         "duration_days": 5,
     })

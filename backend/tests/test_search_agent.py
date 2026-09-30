@@ -24,6 +24,7 @@ from app.agents.search_agent import (
     search_activities,
     resolve_country_code,
     resolve_city_center,
+    resolve_iata_code,
     run_search_agent,
 )
 
@@ -128,6 +129,67 @@ async def test_resolve_country_code_no_places_returns_none():
 
     with patch("app.agents.search_agent._places_post", return_value=mock_response):
         code = await resolve_country_code("Nowhereville")
+
+    assert code is None
+
+
+# --- resolve_iata_code (static table + Duffel fallback) ---
+
+
+@pytest.mark.asyncio
+async def test_resolve_iata_code_static_table_hit_no_api_call():
+    with patch("app.agents.search_agent._duffel_get") as mock_get:
+        code = await resolve_iata_code("Bangalore")
+
+    assert code == "BLR"
+    mock_get.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_resolve_iata_code_static_table_case_and_whitespace_insensitive():
+    code = await resolve_iata_code("  ToKyO  ")
+    assert code == "HND"
+
+
+@pytest.mark.asyncio
+async def test_resolve_iata_code_falls_back_to_duffel_for_unknown_city():
+    mock_response = _mock_response(
+        200, {"data": [{"city_name": "Reykjavik", "iata_code": "KEF"}]}
+    )
+
+    with patch("app.agents.search_agent._duffel_get", return_value=mock_response) as mock_get:
+        code = await resolve_iata_code("Reykjavik")
+
+    assert code == "KEF"
+    mock_get.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_resolve_iata_code_duffel_empty_results_returns_none():
+    mock_response = _mock_response(200, {"data": []})
+
+    with patch("app.agents.search_agent._duffel_get", return_value=mock_response):
+        code = await resolve_iata_code("Nowhereville")
+
+    assert code is None
+
+
+@pytest.mark.asyncio
+async def test_resolve_iata_code_duffel_error_returns_none_not_raise():
+    mock_response = _mock_response(500, {"errors": []})
+
+    with patch("app.agents.search_agent._duffel_get", return_value=mock_response):
+        code = await resolve_iata_code("Nowhereville")
+
+    assert code is None
+
+
+@pytest.mark.asyncio
+async def test_resolve_iata_code_network_error_returns_none_not_raise():
+    with patch(
+        "app.agents.search_agent._duffel_get", side_effect=httpx.ConnectError("boom")
+    ):
+        code = await resolve_iata_code("Nowhereville")
 
     assert code is None
 

@@ -12,6 +12,7 @@ auditable.
 """
 from __future__ import annotations
 
+from datetime import date, timedelta
 from typing import Optional
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -37,6 +38,8 @@ class UserInput(BaseModel):
     """
 
     destination: Optional[str] = Field(default=None, max_length=100)  # None + surprise_me=True if unset
+    origin: str = Field(max_length=100)  # required -- search_agent can't search flights without it
+    start_date: date  # actual travel start date; return_date is derived as start_date + duration_days
     surprise_me: bool = False
     budget_total: float
     currency: str = "INR"
@@ -61,6 +64,25 @@ class UserInput(BaseModel):
         if not v:
             return None
         return v.title()
+
+    @field_validator("origin")
+    @classmethod
+    def normalize_origin(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("Origin is required")
+        return v.title()
+
+    @field_validator("start_date")
+    @classmethod
+    def start_date_not_in_past(cls, v: date) -> date:
+        if v < date.today():
+            raise ValueError("Start date can't be in the past")
+        return v
+
+    @property
+    def return_date(self) -> date:
+        return self.start_date + timedelta(days=self.duration_days)
 
     @field_validator("budget_total")
     @classmethod
