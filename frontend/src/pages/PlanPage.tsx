@@ -1,5 +1,11 @@
 import { useState, type FormEvent } from 'react'
-import { postTripInput, ValidationApiError, type FieldError } from '../lib/api'
+import {
+  postTripPlan,
+  resumeTripPlan,
+  ValidationApiError,
+  type FieldError,
+  type PlanResult,
+} from '../lib/api'
 
 const STYLES = [
   { value: 'hidden_gems', label: 'Hidden gems' },
@@ -10,57 +16,64 @@ const STYLES = [
   { value: 'food_focused', label: 'Food-focused' },
 ]
 
-interface UserInputResponse {
-  destination: string | null
-  surprise_me: boolean
-  budget_total: number
-  currency: string
-  duration_days: number
-  priorities_raw: string
-  style: string | null
+const RESOLUTION_LABELS: Record<string, string> = {
+  increase_budget: 'Increase the budget for this',
+  compromise_equally: 'Trim other categories equally to cover it',
+  compromise_specific: 'Trim a specific category to cover it',
 }
 
 export default function PlanPage() {
+  const [origin, setOrigin] = useState('')
   const [destination, setDestination] = useState('')
   const [surpriseMe, setSurpriseMe] = useState(false)
+  const [startDate, setStartDate] = useState('')
   const [budgetTotal, setBudgetTotal] = useState('')
   const [durationDays, setDurationDays] = useState('')
   const [prioritiesRaw, setPrioritiesRaw] = useState('')
   const [style, setStyle] = useState('')
+  const [hotelStarPreference, setHotelStarPreference] = useState('')
 
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({})
   const [submitting, setSubmitting] = useState(false)
-  const [confirmed, setConfirmed] = useState<UserInputResponse | null>(null)
+  const [plan, setPlan] = useState<PlanResult | null>(null)
 
-  async function handleSubmit(e: FormEvent) {
-    e.preventDefault()
-    setFieldErrors({})
-    setSubmitting(true)
-
-    const payload = {
+  function buildPayload() {
+    return {
       destination: destination.trim() || null,
+      origin: origin.trim(),
+      start_date: startDate || null,
       surprise_me: surpriseMe,
       budget_total: budgetTotal === '' ? null : Number(budgetTotal),
       duration_days: durationDays === '' ? null : Number(durationDays),
       priorities_raw: prioritiesRaw,
       style: style || null,
+      hotel_star_preference: hotelStarPreference === '' ? null : Number(hotelStarPreference),
     }
+  }
 
+  function mapValidationError(err: ValidationApiError) {
+    const mapped: Record<string, string> = {}
+    err.fieldErrors.forEach((fe: FieldError) => {
+      const rawField = String(fe.loc[fe.loc.length - 1])
+      // model-level validators (like destination_or_surprise_me) have
+      // loc=['body'], not a specific field — route those to the
+      // destination field since that's the only model-level check we have
+      const field = rawField === 'body' ? 'destination' : rawField
+      mapped[field] = fe.msg.replace(/^Value error, /, '')
+    })
+    setFieldErrors(mapped)
+  }
+
+  async function handleSubmit(e: FormEvent) {
+    e.preventDefault()
+    setFieldErrors({})
+    setSubmitting(true)
     try {
-      const result = await postTripInput<UserInputResponse>(payload)
-      setConfirmed(result)
+      const result = await postTripPlan(buildPayload())
+      setPlan(result)
     } catch (err) {
       if (err instanceof ValidationApiError) {
-        const mapped: Record<string, string> = {}
-        err.fieldErrors.forEach((fe: FieldError) => {
-          const rawField = String(fe.loc[fe.loc.length - 1])
-          // model-level validators (like destination_or_surprise_me) have
-          // loc=['body'], not a specific field — route those to the
-          // destination field since that's the only model-level check we have
-          const field = rawField === 'body' ? 'destination' : rawField
-          mapped[field] = fe.msg.replace(/^Value error, /, '')
-        })
-        setFieldErrors(mapped)
+        mapValidationError(err)
       } else {
         setFieldErrors({ _general: 'Something went wrong reaching the server. Is the backend running?' })
       }
@@ -69,25 +82,117 @@ export default function PlanPage() {
     }
   }
 
-  if (confirmed) {
+  async function handleResume(choice: string) {
+    if (!plan) return
+    setSubmitting(true)
+    try {
+      const result = await resumeTripPlan(plan.run_id, choice)
+      setPlan(result)
+    } catch {
+      setFieldErrors({ _general: 'Could not continue planning. Is the backend running?' })
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  if (plan?.status === 'needs_clarification' && plan.clarification) {
+    const { clarification } = plan
     return (
       <div className="min-h-screen bg-paper flex items-center justify-center px-6">
-        <div className="max-w-md text-center">
-          <div className="w-14 h-14 rounded-full bg-brand text-paper flex items-center justify-center text-2xl mx-auto mb-6">
-            ✓
+        <div className="max-w-lg w-full">
+          <div className="w-14 h-14 rounded-full bg-route/10 text-route flex items-center justify-center text-2xl mx-auto mb-6">
+            !
           </div>
-          <h1 className="font-display font-semibold text-2xl text-ink mb-2">Got it</h1>
-          <p className="text-muted mb-8">
-            {confirmed.surprise_me
-              ? "We'll surprise you — the agents take it from here."
-              : `Planning for ${confirmed.destination}. The agents take it from here.`}
-          </p>
-          <pre className="text-left text-xs font-mono bg-white border border-line rounded-xl p-4 overflow-auto text-muted">
-            {JSON.stringify(confirmed, null, 2)}
-          </pre>
-          <p className="text-xs text-muted mt-4">
-            (This is the raw validated response — budget_agent/search_agent aren't wired to this form yet.)
-          </p>
+          <h1 className="font-display font-semibold text-2xl text-ink mb-2 text-center">
+            Need your input
+          </h1>
+          {clarification.clarification_needed && (
+            <p className="text-muted mb-6 text-center">{clarification.clarification_needed}</p>
+          )}
+          <div className="space-y-4 mb-8">
+            {clarification.conflicts.map((conflict, i) => (
+              <div
+                key={i}
+                className="bg-white border border-route/20 rounded-xl p-4 text-sm text-ink"
+              >
+                {conflict.description}
+              </div>
+            ))}
+          </div>
+          <div className="space-y-3">
+            {(clarification.conflicts[0]?.resolution_options ?? []).map((option) => (
+              <button
+                key={option}
+                onClick={() => handleResume(option)}
+                disabled={submitting}
+                className="w-full bg-brand hover:bg-brand/90 disabled:opacity-50 text-paper font-mono text-xs tracking-wider uppercase py-4 rounded-full transition-colors"
+              >
+                {submitting ? 'Continuing...' : RESOLUTION_LABELS[option] ?? option}
+              </button>
+            ))}
+          </div>
+          {fieldErrors._general && (
+            <p className="text-route text-sm bg-route/5 border border-route/20 rounded-lg px-4 py-3 mt-4">
+              {fieldErrors._general}
+            </p>
+          )}
+        </div>
+      </div>
+    )
+  }
+
+  if (plan?.status === 'completed') {
+    return (
+      <div className="min-h-screen bg-paper px-6 py-16">
+        <div className="max-w-2xl mx-auto">
+          <span className="block font-mono text-[11px] tracking-wider text-brass uppercase mb-2">
+            Your itinerary
+          </span>
+          <h1 className="font-display font-semibold text-3xl text-ink mb-8">
+            {destination || 'Your trip'}
+          </h1>
+
+          {plan.conflicts.length > 0 && (
+            <div className="mb-8 space-y-2">
+              {plan.conflicts.map((c, i) => (
+                <p
+                  key={i}
+                  className="text-sm text-route bg-route/5 border border-route/20 rounded-lg px-4 py-3"
+                >
+                  {c.description}
+                </p>
+              ))}
+            </div>
+          )}
+
+          <div className="space-y-8">
+            {plan.itinerary.map((day) => (
+              <div key={day.day_number} className="bg-white border border-line rounded-xl p-6">
+                <span className="block font-mono text-[10px] tracking-wider text-muted uppercase mb-2">
+                  Day {day.day_number}
+                </span>
+                <p className="text-ink font-body mb-4">{day.summary}</p>
+                <div className="space-y-2 border-t border-line pt-4">
+                  {day.items.map((item) => (
+                    <div key={item.id} className="flex justify-between text-sm">
+                      <span className="text-muted font-mono text-[10px] uppercase mr-3 mt-0.5">
+                        {item.category}
+                      </span>
+                      <span className="text-ink flex-1">{item.name}</span>
+                      <span className="text-muted font-mono ml-3">₹{Math.round(item.price)}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+
+          <button
+            onClick={() => setPlan(null)}
+            className="mt-10 text-sm text-muted hover:text-ink underline"
+          >
+            Plan another trip
+          </button>
         </div>
       </div>
     )
@@ -102,6 +207,22 @@ export default function PlanPage() {
         <h1 className="font-display font-semibold text-3xl text-ink mb-8">Where to?</h1>
 
         <form onSubmit={handleSubmit} className="space-y-6">
+          <div>
+            <label className="block font-mono text-[10px] tracking-wider text-muted uppercase mb-2">
+              Flying from
+            </label>
+            <input
+              type="text"
+              value={origin}
+              onChange={(e) => setOrigin(e.target.value)}
+              placeholder="Bangalore"
+              className={`w-full border rounded-xl px-4 py-3 font-body text-ink bg-white focus:outline-none focus:ring-2 focus:ring-brand/40 ${
+                fieldErrors.origin ? 'border-route' : 'border-line'
+              }`}
+            />
+            {fieldErrors.origin && <p className="text-route text-xs mt-1.5">{fieldErrors.origin}</p>}
+          </div>
+
           <div>
             <label className="block font-mono text-[10px] tracking-wider text-muted uppercase mb-2">
               Destination
@@ -130,6 +251,23 @@ export default function PlanPage() {
             </label>
             {fieldErrors.destination && (
               <p className="text-route text-xs mt-1.5">{fieldErrors.destination}</p>
+            )}
+          </div>
+
+          <div>
+            <label className="block font-mono text-[10px] tracking-wider text-muted uppercase mb-2">
+              Start date
+            </label>
+            <input
+              type="date"
+              value={startDate}
+              onChange={(e) => setStartDate(e.target.value)}
+              className={`w-full border rounded-xl px-4 py-3 font-body text-ink bg-white focus:outline-none focus:ring-2 focus:ring-brand/40 ${
+                fieldErrors.start_date ? 'border-route' : 'border-line'
+              }`}
+            />
+            {fieldErrors.start_date && (
+              <p className="text-route text-xs mt-1.5">{fieldErrors.start_date}</p>
             )}
           </div>
 
@@ -192,6 +330,29 @@ export default function PlanPage() {
 
           <div>
             <label className="block font-mono text-[10px] tracking-wider text-muted uppercase mb-2">
+              Hotel star preference (optional)
+            </label>
+            <select
+              value={hotelStarPreference}
+              onChange={(e) => setHotelStarPreference(e.target.value)}
+              className={`w-full border rounded-xl px-4 py-3 font-body text-ink bg-white focus:outline-none focus:ring-2 focus:ring-brand/40 ${
+                fieldErrors.hotel_star_preference ? 'border-route' : 'border-line'
+              }`}
+            >
+              <option value="">No preference</option>
+              {[1, 2, 3, 4, 5].map((n) => (
+                <option key={n} value={n}>
+                  {n} star{n > 1 ? 's' : ''}
+                </option>
+              ))}
+            </select>
+            {fieldErrors.hotel_star_preference && (
+              <p className="text-route text-xs mt-1.5">{fieldErrors.hotel_star_preference}</p>
+            )}
+          </div>
+
+          <div>
+            <label className="block font-mono text-[10px] tracking-wider text-muted uppercase mb-2">
               Anything you care about?
             </label>
             <textarea
@@ -214,7 +375,7 @@ export default function PlanPage() {
             disabled={submitting}
             className="w-full bg-brand hover:bg-brand/90 disabled:opacity-50 text-paper font-mono text-xs tracking-wider uppercase py-4 rounded-full transition-colors"
           >
-            {submitting ? 'Checking...' : 'Continue'}
+            {submitting ? 'Planning your trip...' : 'Plan my trip'}
           </button>
         </form>
       </div>
