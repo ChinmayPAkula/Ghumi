@@ -32,13 +32,13 @@ export class ValidationApiError extends Error {
 }
 
 /**
- * POST /trip/validate-input — the one route that exists so far.
- * Unlike apiFetch, this preserves the structured 422 body (field name +
- * message per failing field) instead of collapsing it into a plain string,
- * since the form needs to show a red error under the specific field.
+ * Shared by every endpoint that takes UserInput as its body (validate-input,
+ * plan) — preserves the structured 422 body (field name + message per
+ * failing field) instead of collapsing it into a plain string, since the
+ * form needs to show a red error under the specific field.
  */
-export async function postTripInput<T>(payload: unknown): Promise<T> {
-  const res = await fetch(`${API_BASE_URL}/trip/validate-input`, {
+async function postJson<T>(path: string, payload: unknown): Promise<T> {
+  const res = await fetch(`${API_BASE_URL}${path}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
@@ -49,6 +49,79 @@ export async function postTripInput<T>(payload: unknown): Promise<T> {
     const detail = Array.isArray(body?.detail) ? (body.detail as FieldError[]) : []
     throw new ValidationApiError(detail)
   }
+  if (!res.ok) {
+    throw new Error(`API error ${res.status}: ${await res.text()}`)
+  }
+  return res.json()
+}
+
+/** POST /trip/validate-input */
+export async function postTripInput<T>(payload: unknown): Promise<T> {
+  return postJson<T>('/trip/validate-input', payload)
+}
+
+/** Matches backend Candidate/ScoredCandidate (app/schemas/trip_state.py). */
+export interface ScoredCandidate {
+  id: string
+  category: string
+  name: string
+  price: number
+  rating: number | null
+  review_count: number | null
+  score: number
+  reasoning: string | null
+}
+
+/** Matches backend DayPlan. */
+export interface DayPlan {
+  day_number: number
+  summary: string
+  items: ScoredCandidate[]
+}
+
+/** Matches backend Conflict. */
+export interface Conflict {
+  description: string
+  affected_days: number[]
+  category: string | null
+  shortfall_amount: number | null
+  resolution_options: string[]
+}
+
+/** Matches backend ClarificationInfo (app/api/trip.py). */
+export interface ClarificationInfo {
+  stage: string
+  clarification_needed: string | null
+  conflicts: Conflict[]
+}
+
+/** Matches backend PlanResult (app/api/trip.py). */
+export interface PlanResult {
+  run_id: string
+  status: 'completed' | 'needs_clarification'
+  itinerary: DayPlan[]
+  budget_allocation: Record<string, number>
+  conflicts: Conflict[]
+  clarification: ClarificationInfo | null
+}
+
+/** POST /trip/plan — runs the full agent pipeline for one trip. */
+export async function postTripPlan(payload: unknown): Promise<PlanResult> {
+  return postJson<PlanResult>('/trip/plan', payload)
+}
+
+/**
+ * POST /trip/plan/{run_id}/resume — continues a paused run past a
+ * clarification checkpoint. `choice` is one of the Conflict's
+ * resolution_options (or free text — the backend currently just
+ * acknowledges and continues, see orchestrator.py).
+ */
+export async function resumeTripPlan(runId: string, choice: string): Promise<PlanResult> {
+  const res = await fetch(`${API_BASE_URL}/trip/plan/${encodeURIComponent(runId)}/resume`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ choice }),
+  })
   if (!res.ok) {
     throw new Error(`API error ${res.status}: ${await res.text()}`)
   }

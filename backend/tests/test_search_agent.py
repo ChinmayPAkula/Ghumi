@@ -17,12 +17,14 @@ from app.agents.search_agent import (
     HOTELS,
     FOOD,
     ACTIVITIES,
+    TRANSPORT,
     search_flights,
     search_hotels,
     search_food,
     search_activities,
     resolve_country_code,
     resolve_city_center,
+    resolve_iata_code,
     run_search_agent,
 )
 
@@ -127,6 +129,67 @@ async def test_resolve_country_code_no_places_returns_none():
 
     with patch("app.agents.search_agent._places_post", return_value=mock_response):
         code = await resolve_country_code("Nowhereville")
+
+    assert code is None
+
+
+# --- resolve_iata_code (static table + Duffel fallback) ---
+
+
+@pytest.mark.asyncio
+async def test_resolve_iata_code_static_table_hit_no_api_call():
+    with patch("app.agents.search_agent._duffel_get") as mock_get:
+        code = await resolve_iata_code("Bangalore")
+
+    assert code == "BLR"
+    mock_get.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_resolve_iata_code_static_table_case_and_whitespace_insensitive():
+    code = await resolve_iata_code("  ToKyO  ")
+    assert code == "HND"
+
+
+@pytest.mark.asyncio
+async def test_resolve_iata_code_falls_back_to_duffel_for_unknown_city():
+    mock_response = _mock_response(
+        200, {"data": [{"city_name": "Reykjavik", "iata_code": "KEF"}]}
+    )
+
+    with patch("app.agents.search_agent._duffel_get", return_value=mock_response) as mock_get:
+        code = await resolve_iata_code("Reykjavik")
+
+    assert code == "KEF"
+    mock_get.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_resolve_iata_code_duffel_empty_results_returns_none():
+    mock_response = _mock_response(200, {"data": []})
+
+    with patch("app.agents.search_agent._duffel_get", return_value=mock_response):
+        code = await resolve_iata_code("Nowhereville")
+
+    assert code is None
+
+
+@pytest.mark.asyncio
+async def test_resolve_iata_code_duffel_error_returns_none_not_raise():
+    mock_response = _mock_response(500, {"errors": []})
+
+    with patch("app.agents.search_agent._duffel_get", return_value=mock_response):
+        code = await resolve_iata_code("Nowhereville")
+
+    assert code is None
+
+
+@pytest.mark.asyncio
+async def test_resolve_iata_code_network_error_returns_none_not_raise():
+    with patch(
+        "app.agents.search_agent._duffel_get", side_effect=httpx.ConnectError("boom")
+    ):
+        code = await resolve_iata_code("Nowhereville")
 
     assert code is None
 
@@ -344,7 +407,13 @@ async def test_underspent_flight_reallocates_leftover_to_other_categories():
     to a meaningless floor share. Asserting the actual budgets passed
     downstream (not just that the call happened) is what catches this.
     """
-    budget_allocation = {FLIGHTS: 50000, HOTELS: 20000, FOOD: 15000, ACTIVITIES: 15000}
+    budget_allocation = {
+        FLIGHTS: 50000,
+        HOTELS: 20000,
+        FOOD: 15000,
+        ACTIVITIES: 15000,
+        TRANSPORT: 10000,
+    }
     received_budgets = {}
 
     async def fake_search_flights(*args, **kwargs):
@@ -375,14 +444,15 @@ async def test_underspent_flight_reallocates_leftover_to_other_categories():
 
     assert conflicts == []
     assert results[FLIGHTS][0].price == 30000.0
-    # 20000 leftover (50000 allocated - 30000 actual) redistributed across a
-    # 70000 pool (20000+15000+15000+20000), per allocate_budget()'s
-    # floor/ceiling logic on renormalized 0.4/0.3/0.3 weights -- these exact
-    # values were computed by calling the real allocate_budget(), not
-    # hand-derived, so this stays correct if its algorithm ever changes.
-    assert received_budgets[HOTELS] == pytest.approx(21700.0)
-    assert received_budgets[FOOD] == pytest.approx(18900.0)
-    assert received_budgets[ACTIVITIES] == pytest.approx(18900.0)
+    # 20000 leftover (50000 allocated - 30000 actual) redistributed across
+    # an 80000 pool (20000+15000+15000+10000+20000 leftover), per
+    # allocate_budget()'s floor/ceiling logic on renormalized weights --
+    # these exact values were computed by calling the real allocate_budget(),
+    # not hand-derived, so this stays correct if its algorithm ever changes.
+    # (Transport's lower 5% floor vs. 15% for the rest is baked into these.)
+    assert received_budgets[HOTELS] == pytest.approx(21333.333333333332)
+    assert received_budgets[FOOD] == pytest.approx(19000.0)
+    assert received_budgets[ACTIVITIES] == pytest.approx(19000.0)
 
 
 @pytest.mark.asyncio

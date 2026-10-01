@@ -54,8 +54,12 @@ FLIGHTS = "flights"
 HOTELS = "hotels"
 FOOD = "food"
 ACTIVITIES = "activities"
+TRANSPORT = "transport"  # not searched here (no provider) -- itinerary_agent
+# reads this allocation to estimate local travel cost between the hotel
+# and each day's activities. Still flexes with the reallocation loop below
+# like hotels/food/activities, since it's not "locked in" the way flights are.
 
-REALLOCATABLE_CATEGORIES = (HOTELS, FOOD, ACTIVITIES)
+REALLOCATABLE_CATEGORIES = (HOTELS, FOOD, ACTIVITIES, TRANSPORT)
 
 RESOLUTION_OPTIONS = ["increase_budget", "compromise_equally", "compromise_specific"]
 
@@ -87,6 +91,87 @@ async def _duffel_post(path: str, json_body: dict) -> httpx.Response:
                 "Accept": "application/json",
             },
         )
+
+
+async def _duffel_get(path: str, params: dict) -> httpx.Response:
+    """Isolated so tests can monkeypatch this instead of mocking httpx internals."""
+    settings = get_settings()
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        return await client.get(
+            f"{settings.duffel_base_url}{path}",
+            params=params,
+            headers={
+                "Authorization": f"Bearer {settings.duffel_api_key}",
+                "Duffel-Version": "v2",
+                "Accept": "application/json",
+            },
+        )
+
+
+# Common city -> IATA airport code, zero extra API calls for the cities
+# most likely to come up in a demo/portfolio context. Unknown cities fall
+# back to Duffel's own /places/suggestions endpoint (confirmed live: same
+# API key, returns real matches like {"iata_code": "BLR", ...}), so this
+# table is a fast path, not the only path.
+STATIC_IATA_CODES: dict[str, str] = {
+    "bangalore": "BLR",
+    "bengaluru": "BLR",
+    "mumbai": "BOM",
+    "delhi": "DEL",
+    "new delhi": "DEL",
+    "chennai": "MAA",
+    "kolkata": "CCU",
+    "hyderabad": "HYD",
+    "goa": "GOI",
+    "tokyo": "HND",
+    "osaka": "KIX",
+    "kyoto": "KIX",  # Kyoto has no airport of its own; Kansai (Osaka) is the practical one
+    "paris": "CDG",
+    "london": "LHR",
+    "new york": "JFK",
+    "los angeles": "LAX",
+    "dubai": "DXB",
+    "singapore": "SIN",
+    "bangkok": "BKK",
+    "bali": "DPS",
+    "sydney": "SYD",
+    "rome": "FCO",
+    "barcelona": "BCN",
+    "amsterdam": "AMS",
+    "istanbul": "IST",
+    "hong kong": "HKG",
+    "seoul": "ICN",
+}
+
+
+async def resolve_iata_code(city_name: str) -> Optional[str]:
+    """
+    City name -> IATA airport code for Duffel. Static table first (free,
+    instant), falls back to Duffel's /places/suggestions for anything not
+    in it. Returns None if neither resolves — callers should treat that
+    as a clarification-needed state, not guess.
+    """
+    normalized = city_name.strip().lower()
+    if normalized in STATIC_IATA_CODES:
+        return STATIC_IATA_CODES[normalized]
+
+    try:
+        response = await _duffel_get("/places/suggestions", {"query": city_name})
+    except httpx.RequestError:
+        return None
+    if response.status_code >= 400:
+        return None
+
+    try:
+        places = response.json().get("data", [])
+    except ValueError:
+        return None
+
+    for place in places:
+        code = place.get("iata_code")
+        if code:
+            return code
+    return None
 
 
 async def _liteapi_get(path: str, params: dict) -> httpx.Response:

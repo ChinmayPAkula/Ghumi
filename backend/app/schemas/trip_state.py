@@ -12,6 +12,7 @@ auditable.
 """
 from __future__ import annotations
 
+from datetime import date, timedelta
 from typing import Optional
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -22,6 +23,7 @@ VALID_STYLES = {
     "adventurous",
     "cultural",
     "food_focused",
+    "mix_of_all",
 }
 
 
@@ -36,12 +38,22 @@ class UserInput(BaseModel):
     """
 
     destination: Optional[str] = Field(default=None, max_length=100)  # None + surprise_me=True if unset
+    origin: str = Field(max_length=100)  # required -- search_agent can't search flights without it
+    start_date: date  # actual travel start date; return_date is derived as start_date + duration_days
     surprise_me: bool = False
     budget_total: float
     currency: str = "INR"
     duration_days: int
     priorities_raw: str = Field(default="", max_length=500)  # free text, e.g. "I care more about food"
     style: Optional[str] = None              # hidden_gems / popular / relaxed / adventurous / cultural / food_focused
+    hotel_star_preference: Optional[int] = None  # 1-5, soft preference not a hard filter (ranking_agent)
+
+    @field_validator("hotel_star_preference")
+    @classmethod
+    def star_preference_in_range(cls, v: Optional[int]) -> Optional[int]:
+        if v is not None and not (1 <= v <= 5):
+            raise ValueError("Hotel star preference must be between 1 and 5")
+        return v
 
     @field_validator("destination")
     @classmethod
@@ -52,6 +64,25 @@ class UserInput(BaseModel):
         if not v:
             return None
         return v.title()
+
+    @field_validator("origin")
+    @classmethod
+    def normalize_origin(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("Origin is required")
+        return v.title()
+
+    @field_validator("start_date")
+    @classmethod
+    def start_date_not_in_past(cls, v: date) -> date:
+        if v < date.today():
+            raise ValueError("Start date can't be in the past")
+        return v
+
+    @property
+    def return_date(self) -> date:
+        return self.start_date + timedelta(days=self.duration_days)
 
     @field_validator("budget_total")
     @classmethod
@@ -67,8 +98,8 @@ class UserInput(BaseModel):
     def duration_within_range(cls, v: int) -> int:
         if v < 1:
             raise ValueError("Trip must be at least 1 day")
-        if v > 30:
-            raise ValueError("Trip can't be longer than 30 days")
+        if v > 50:
+            raise ValueError("Trip can't be longer than 50 days")
         return v
 
     @field_validator("style")
