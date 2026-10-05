@@ -14,9 +14,16 @@ from fastapi import APIRouter, HTTPException, Request
 from langgraph.types import Command
 from pydantic import BaseModel
 
+from app.agents.booking_agent import (
+    BookingResult,
+    GuestDetails,
+    PassengerDetails,
+    book_flight,
+    book_hotel,
+)
 from app.agents.orchestrator import get_compiled_graph
 from app.core.rate_limit import limiter
-from app.schemas.trip_state import Conflict, DayPlan, TripState, UserInput
+from app.schemas.trip_state import Candidate, Conflict, DayPlan, TripState, UserInput
 
 router = APIRouter(prefix="/trip", tags=["trip"])
 
@@ -146,3 +153,76 @@ async def resume_trip(request: Request, run_id: str, payload: ResumePayload) -> 
 
     result = await graph.ainvoke(Command(resume=payload.choice), config=config)
     return _build_plan_result(run_id, result)
+
+
+async def _get_completed_state_values(run_id: str) -> dict:
+    """
+    Shared by both booking endpoints: look up a run's stored state (read
+    -only, no graph re-invocation -- booking is a user-triggered action on
+    an already-finished plan, not a pipeline step) and confirm it actually
+    finished (state.next empty) rather than being mid-run or paused on a
+    clarification. 404s otherwise, same convention as /resume's check.
+    """
+    config = {"configurable": {"thread_id": run_id}}
+    graph = get_compiled_graph()
+    state = await graph.aget_state(config)
+    if state is None or not state.values:
+        raise HTTPException(status_code=404, detail="No run found for this run_id")
+    if state.next:
+        raise HTTPException(
+            status_code=409, detail="This run hasn't finished planning yet (still paused/in progress)"
+        )
+    return state.values
+
+
+def _top_flight_candidate(state_values: dict) -> Candidate:
+    flights = state_values.get("ranked_shortlist", {}).get("flights", [])
+    if not flights:
+        raise HTTPException(status_code=400, detail="No flight was found for this trip to book.")
+    return flights[0]
+
+
+def _selected_hotel_candidate(state_values: dict) -> Candidate:
+    """
+    The hotel actually used in the itinerary, NOT just ranked_shortlist[0]
+    -- itinerary_agent already picked the top-ranked hotel that fits
+    budget (see itinerary_agent._select_hotel_within_budget), which can
+    differ from the raw top-ranked candidate. Booking the one shown to
+    the user, not a different one they never saw, matters here.
+    """
+    itinerary = state_values.get("itinerary", [])
+    for day in itinerary:
+        for item in day.items:
+            if item.category == "hotels":
+                return item
+    raise HTTPException(status_code=400, detail="No hotel was found for this trip to book.")
+
+
+@router.post("/{run_id}/book/flight", response_model=BookingResult)
+@limiter.limit("5/minute")
+async def book_flight_route(request: Request, run_id: str, payload: PassengerDetails) -> BookingResult:
+    """
+    Books the top-ranked flight from a completed run via Duffel (sandbox
+    -- PRD §2.2 non-goal: no real payment). See booking_agent.py for the
+    hold-vs-instant-payment branching and why failures are surfaced
+    as-is rather than hidden.
+
+    Rate-limited (5/min per IP) -- a real Duffel order call per request.
+    """
+    state_values = await _get_completed_state_values(run_id)
+    flight = _top_flight_candidate(state_values)
+    return await book_flight(flight, payload)
+
+
+@router.post("/{run_id}/book/hotel", response_model=BookingResult)
+@limiter.limit("5/minute")
+async def book_hotel_route(request: Request, run_id: str, payload: GuestDetails) -> BookingResult:
+    """
+    Books the itinerary's selected hotel via LiteAPI (sandbox -- prebook
+    then book, see booking_agent.py).
+
+    Rate-limited (5/min per IP) -- two real LiteAPI calls per request.
+    """
+    state_values = await _get_completed_state_values(run_id)
+    hotel = _selected_hotel_candidate(state_values)
+    return await book_hotel(hotel, payload)

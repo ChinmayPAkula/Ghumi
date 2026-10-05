@@ -11,6 +11,7 @@ langchain-groq
 # --- Schema/validation ---
 pydantic>=2
 pydantic-settings
+email-validator  # needed for pydantic's EmailStr (booking_agent passenger/guest emails)
 
 # --- Database / Auth ---
 supabase

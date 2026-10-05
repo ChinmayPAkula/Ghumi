@@ -131,3 +131,62 @@ export async function resumeTripPlan(runId: string, choice: string): Promise<Pla
   }
   return res.json()
 }
+
+/** Matches backend booking_agent.PassengerDetails (Duffel order). */
+export interface PassengerDetails {
+  title: 'mr' | 'mrs' | 'ms' | 'miss' | 'dr'
+  gender: 'm' | 'f'
+  given_name: string
+  family_name: string
+  born_on: string // YYYY-MM-DD
+  email: string
+  phone_number: string // E.164, e.g. "+919876543210"
+}
+
+/** Matches backend booking_agent.GuestDetails (LiteAPI booking). */
+export interface GuestDetails {
+  first_name: string
+  last_name: string
+  email: string
+}
+
+/** Matches backend booking_agent.BookingResult. */
+export interface BookingResult {
+  success: boolean
+  provider: string
+  confirmation_code: string | null
+  booking_id: string | null
+  error_message: string | null
+}
+
+async function postBooking<T>(path: string, payload: T): Promise<BookingResult> {
+  const res = await fetch(`${API_BASE_URL}${path}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+  if (res.status === 422) {
+    const body = await res.json().catch(() => null)
+    const detail = Array.isArray(body?.detail) ? (body.detail as FieldError[]) : []
+    throw new ValidationApiError(detail)
+  }
+  if (!res.ok) {
+    throw new Error(`API error ${res.status}: ${await res.text()}`)
+  }
+  return res.json()
+}
+
+/**
+ * POST /trip/{run_id}/book/flight — books the top-ranked flight via
+ * Duffel (sandbox). A real provider-side failure (declined, sold out,
+ * etc.) comes back as a normal 200 with success=false, not an HTTP
+ * error — only a validation/network problem throws.
+ */
+export async function bookFlight(runId: string, passenger: PassengerDetails): Promise<BookingResult> {
+  return postBooking(`/trip/${encodeURIComponent(runId)}/book/flight`, passenger)
+}
+
+/** POST /trip/{run_id}/book/hotel — books the itinerary's hotel via LiteAPI (sandbox). */
+export async function bookHotel(runId: string, guest: GuestDetails): Promise<BookingResult> {
+  return postBooking(`/trip/${encodeURIComponent(runId)}/book/hotel`, guest)
+}

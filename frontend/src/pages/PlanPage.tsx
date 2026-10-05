@@ -9,6 +9,7 @@ import {
 } from '../lib/api'
 import { saveTrip } from '../lib/savedTrips'
 import ItineraryView from '../components/ItineraryView'
+import BookingSection from '../components/BookingSection'
 
 const STYLES = [
   { value: 'hidden_gems', label: 'Hidden gems' },
@@ -202,6 +203,7 @@ export default function PlanPage() {
             My trips
           </Link>
         </div>
+        <BookingSection runId={plan.run_id} />
       </div>
     )
   }
