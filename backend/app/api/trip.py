@@ -48,6 +48,7 @@ class ClarificationInfo(BaseModel):
 class PlanResult(BaseModel):
     run_id: str
     status: Literal["completed", "needs_clarification"]
+    destination: Optional[str] = None
     itinerary: list[DayPlan] = []
     budget_allocation: dict[str, float] = {}
     conflicts: list[Conflict] = []
@@ -58,13 +59,29 @@ class ResumePayload(BaseModel):
     choice: str  # one of Conflict.resolution_options, or free text acknowledgment
 
 
+def _resolve_destination(graph_output: dict) -> Optional[str]:
+    """
+    chosen_destination is only set for "surprise me" runs (search_agent_node
+    picks it via an LLM call) -- for a normal run it's always None, so the
+    user-typed destination is the real answer. Centralized here so both
+    branches of _build_plan_result stay consistent.
+    """
+    chosen = graph_output.get("chosen_destination")
+    if chosen:
+        return chosen
+    user_input = graph_output.get("user_input")
+    return user_input.destination if user_input else None
+
+
 def _build_plan_result(run_id: str, graph_output: dict) -> PlanResult:
     interrupts = graph_output.get("__interrupt__")
+    destination = _resolve_destination(graph_output)
     if interrupts:
         payload = interrupts[0].value
         return PlanResult(
             run_id=run_id,
             status="needs_clarification",
+            destination=destination,
             budget_allocation=graph_output.get("budget_allocation", {}),
             conflicts=graph_output.get("conflicts", []),
             clarification=ClarificationInfo(
@@ -76,6 +93,7 @@ def _build_plan_result(run_id: str, graph_output: dict) -> PlanResult:
     return PlanResult(
         run_id=run_id,
         status="completed",
+        destination=destination,
         itinerary=graph_output.get("itinerary", []),
         budget_allocation=graph_output.get("budget_allocation", {}),
         conflicts=graph_output.get("conflicts", []),

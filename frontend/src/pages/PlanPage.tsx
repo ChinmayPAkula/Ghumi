@@ -142,13 +142,30 @@ export default function PlanPage() {
               {fieldErrors._general}
             </p>
           )}
+          {/* Always-available escape hatch -- some clarifications (e.g.
+              "surprise me" isn't built yet) have no resolution_options at
+              all, since there's nothing to pick between. Without this, a
+              user hitting one of those got stuck on this screen with no
+              way back to the form. */}
+          <button
+            onClick={() => {
+              setPlan(null)
+              setSaved(false)
+            }}
+            className="block w-full text-center text-sm text-muted hover:text-ink underline mt-6"
+          >
+            Back to the form
+          </button>
         </div>
       </div>
     )
   }
 
   if (plan?.status === 'completed') {
-    const tripDestination = destination || 'Your trip'
+    // Prefer the API's resolved destination over local form state -- for
+    // a "surprise me" trip, the form never had a destination at all, only
+    // the backend (via its LLM suggestion) knows what was actually planned.
+    const tripDestination = plan.destination || destination || 'Your trip'
     return (
       <div className="min-h-screen bg-paper px-6 py-16">
         <ItineraryView

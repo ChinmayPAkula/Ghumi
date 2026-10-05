@@ -99,6 +99,10 @@ export interface ClarificationInfo {
 export interface PlanResult {
   run_id: string
   status: 'completed' | 'needs_clarification'
+  // The resolved destination -- for a "surprise me" trip this is the
+  // LLM-suggested city, not whatever (empty) value the form had. Always
+  // prefer this over local form state when displaying the trip.
+  destination: string | null
   itinerary: DayPlan[]
   budget_allocation: Record<string, number>
   conflicts: Conflict[]

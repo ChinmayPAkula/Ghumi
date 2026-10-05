@@ -13,7 +13,7 @@ Two layers, matching how the underlying agents were each tested:
      correct in isolation (already covered by each agent's own test file).
 """
 from datetime import date, timedelta
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from langgraph.checkpoint.memory import InMemorySaver
@@ -29,6 +29,7 @@ from app.agents.orchestrator import (
     route_after_itinerary,
     build_graph,
     compile_graph,
+    suggest_surprise_destination,
 )
 from app.schemas.trip_state import TripState, UserInput, Candidate, Conflict, DayPlan
 
@@ -53,6 +54,56 @@ def _state(**overrides):
     payload = dict(run_id="test-run", user_input=_user_input())
     payload.update(overrides)
     return TripState(**payload)
+
+
+# --- suggest_surprise_destination ---
+
+
+def test_suggest_surprise_destination_returns_llm_choice():
+    user_input = _user_input(destination=None, surprise_me=True, budget_total=80000)
+    mock_llm = MagicMock()
+    mock_llm.invoke.return_value = MagicMock(content="Lisbon")
+
+    with patch("app.agents.orchestrator._get_destination_llm", return_value=mock_llm):
+        result = suggest_surprise_destination(user_input)
+
+    assert result == "Lisbon"
+    mock_llm.invoke.assert_called_once()
+    sent_prompt = mock_llm.invoke.call_args[0][0]
+    assert "80000" in sent_prompt
+
+
+def test_suggest_surprise_destination_returns_none_on_llm_error():
+    user_input = _user_input(destination=None, surprise_me=True)
+
+    with patch(
+        "app.agents.orchestrator._get_destination_llm", side_effect=RuntimeError("boom")
+    ):
+        result = suggest_surprise_destination(user_input)
+
+    assert result is None
+
+
+def test_suggest_surprise_destination_returns_none_on_empty_response():
+    user_input = _user_input(destination=None, surprise_me=True)
+    mock_llm = MagicMock()
+    mock_llm.invoke.return_value = MagicMock(content="")
+
+    with patch("app.agents.orchestrator._get_destination_llm", return_value=mock_llm):
+        result = suggest_surprise_destination(user_input)
+
+    assert result is None
+
+
+def test_suggest_surprise_destination_strips_whitespace_and_punctuation():
+    user_input = _user_input(destination=None, surprise_me=True)
+    mock_llm = MagicMock()
+    mock_llm.invoke.return_value = MagicMock(content='  "Lisbon."  ')
+
+    with patch("app.agents.orchestrator._get_destination_llm", return_value=mock_llm):
+        result = suggest_surprise_destination(user_input)
+
+    assert result == "Lisbon"
 
 
 # --- input_handler_node ---
@@ -118,14 +169,53 @@ async def test_search_agent_node_unresolvable_destination_sets_clarification():
 
 
 @pytest.mark.asyncio
-async def test_search_agent_node_surprise_me_without_destination_sets_clarification():
+async def test_search_agent_node_surprise_me_suggests_and_uses_destination():
     state = _state(user_input=_user_input(destination=None, surprise_me=True))
+
+    with patch(
+        "app.agents.orchestrator.resolve_iata_code", new=AsyncMock(return_value="HND")
+    ), patch(
+        "app.agents.orchestrator.suggest_surprise_destination", return_value="Tokyo"
+    ) as mock_suggest, patch(
+        "app.agents.orchestrator.run_search_agent",
+        new=AsyncMock(return_value=({"flights": []}, [], [])),
+    ) as mock_search:
+        result = await search_agent_node(state)
+
+    mock_suggest.assert_called_once_with(state.user_input)
+    assert result["chosen_destination"] == "Tokyo"
+    assert "clarification_needed" not in result
+    assert mock_search.call_args.kwargs["destination_city"] == "Tokyo"
+
+
+@pytest.mark.asyncio
+async def test_search_agent_node_surprise_me_suggestion_fails_sets_clarification():
+    state = _state(user_input=_user_input(destination=None, surprise_me=True))
+
     with patch(
         "app.agents.orchestrator.resolve_iata_code", new=AsyncMock(return_value="BLR")
-    ):
+    ), patch("app.agents.orchestrator.suggest_surprise_destination", return_value=None):
         result = await search_agent_node(state)
 
     assert "clarification_needed" in result
+
+
+@pytest.mark.asyncio
+async def test_search_agent_node_real_destination_never_calls_suggest():
+    state = _state(user_input=_user_input(destination="Tokyo", surprise_me=False))
+
+    with patch(
+        "app.agents.orchestrator.resolve_iata_code", new=AsyncMock(return_value="HND")
+    ), patch(
+        "app.agents.orchestrator.suggest_surprise_destination"
+    ) as mock_suggest, patch(
+        "app.agents.orchestrator.run_search_agent",
+        new=AsyncMock(return_value=({"flights": []}, [], [])),
+    ):
+        result = await search_agent_node(state)
+
+    mock_suggest.assert_not_called()
+    assert result["chosen_destination"] is None
 
 
 @pytest.mark.asyncio

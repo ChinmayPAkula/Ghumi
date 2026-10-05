@@ -165,6 +165,12 @@ class TripState(BaseModel):
 
     # --- Phase 1 ---
     user_input: Optional[UserInput] = None                          # input_handler
+    # Set by search_agent when user_input.surprise_me is True and no
+    # destination was given -- an LLM-suggested city (orchestrator's
+    # suggest_surprise_destination()). None whenever a real destination was
+    # typed; downstream nodes read chosen_destination OR user_input.destination,
+    # never user_input.destination alone, so they work for both cases.
+    chosen_destination: Optional[str] = None                        # search_agent (LLM)
     priority_weights: dict[str, float] = Field(default_factory=dict)  # budget_agent (LLM)
     budget_allocation: dict[str, float] = Field(default_factory=dict)  # budget_agent (code)
     search_results: dict[str, list[Candidate]] = Field(default_factory=dict)  # search_agent

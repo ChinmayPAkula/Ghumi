@@ -32,7 +32,9 @@ deliberate scope boundary, not an oversight.
 from __future__ import annotations
 
 from functools import lru_cache
+from typing import Optional
 
+from langchain_groq import ChatGroq
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import StateGraph, START, END
 from langgraph.types import interrupt
@@ -41,7 +43,80 @@ from app.agents.budget_agent import parse_priority_weights, allocate_budget
 from app.agents.itinerary_agent import compose_itinerary
 from app.agents.ranking_agent import rank_search_results
 from app.agents.search_agent import resolve_iata_code, resolve_city_center, run_search_agent
-from app.schemas.trip_state import TripState
+from app.core.config import get_settings
+from app.schemas.trip_state import TripState, UserInput
+
+SURPRISE_ME_PROMPT = """You are suggesting ONE real travel destination for a
+traveler who wants to be surprised. Pick a specific, well-known CITY (not a
+country or region) that is realistic for their budget and trip length, and
+fits their stated style/priorities if any were given. The city must have its
+own commercial airport or be served by a nearby major airport.
+
+Budget: {budget} {currency}
+Trip length: {duration} days
+Style: {style}
+What they care about: {priorities}
+
+Respond with ONLY the city name -- no punctuation, no explanation, no extra
+words. Just the name, e.g.: Lisbon
+"""
+
+
+def _get_destination_llm() -> ChatGroq:
+    """
+    Isolated so tests can monkeypatch this instead of mocking ChatGroq's
+    internals directly — same pattern as itinerary_agent._get_narrative_llm().
+
+    Plain chat completion, NOT with_structured_output(): live-tested that
+    Groq's gpt-oss models (both 20b and 120b) unreliably honor a forced
+    tool_choice for a task this simple -- the model would correctly answer
+    in plain text (e.g. "Udaipur") but fail Groq's "tool choice is
+    required but model did not call a tool" check, a real upstream quirk,
+    not a bug in the schema. Parsing one line of plain text ourselves
+    sidesteps the whole problem.
+    """
+    settings = get_settings()
+    return ChatGroq(
+        # 120b: this needs actual judgment (balancing budget, duration,
+        # style into one sensible pick), the same reasoning itinerary_agent's
+        # narrative composition needed the larger model for.
+        model="openai/gpt-oss-120b",
+        api_key=settings.groq_api_key,
+        temperature=0.9,  # a "surprise" should vary between runs, unlike budget parsing
+    )
+
+
+def suggest_surprise_destination(user_input: UserInput) -> Optional[str]:
+    """
+    LLM call: picks a real city for "surprise me" based on budget/duration/
+    style/priorities. One retry, then None rather than raising --
+    search_agent_node treats that as a clarification-needed case, same
+    safety net as before this existed.
+    """
+    prompt = SURPRISE_ME_PROMPT.format(
+        budget=user_input.budget_total,
+        currency=user_input.currency,
+        duration=user_input.duration_days,
+        style=user_input.style or "no particular style",
+        priorities=user_input.priorities_raw or "nothing specific",
+    )
+
+    for _ in range(2):  # one retry
+        try:
+            llm = _get_destination_llm()
+            response = llm.invoke(prompt)
+            text = response.content
+            if isinstance(text, str) and text.strip():
+                # The model occasionally adds a trailing period/quotes
+                # despite instructions -- take the first line, strip stray
+                # punctuation rather than failing on an otherwise-good answer.
+                destination = text.strip().splitlines()[0].strip(" \"'.")
+                if destination:
+                    return destination
+        except Exception:
+            continue
+
+    return None
 
 
 def input_handler_node(state: TripState) -> dict:
@@ -72,22 +147,26 @@ async def search_agent_node(state: TripState) -> dict:
     if origin_iata is None:
         return {"clarification_needed": f"Couldn't find an airport for '{user_input.origin}'."}
 
-    if user_input.surprise_me and not user_input.destination:
-        # "Surprise me" destination selection is a separate, not-yet-built
-        # concern (no destination-picking logic exists anywhere in Phase 1)
-        # -- surface it as a clarification rather than guessing a city.
-        return {"clarification_needed": "Surprise-me destination selection isn't built yet."}
+    destination_city = user_input.destination
+    chosen_destination = None
+    if user_input.surprise_me and not destination_city:
+        chosen_destination = suggest_surprise_destination(user_input)
+        if not chosen_destination:
+            return {
+                "clarification_needed": (
+                    "Couldn't come up with a surprise destination — try entering one directly."
+                )
+            }
+        destination_city = chosen_destination
 
-    destination_iata = await resolve_iata_code(user_input.destination)
+    destination_iata = await resolve_iata_code(destination_city)
     if destination_iata is None:
-        return {
-            "clarification_needed": f"Couldn't find an airport for '{user_input.destination}'."
-        }
+        return {"clarification_needed": f"Couldn't find an airport for '{destination_city}'."}
 
     results, errors, conflicts = await run_search_agent(
         origin_iata=origin_iata,
         destination_iata=destination_iata,
-        destination_city=user_input.destination,
+        destination_city=destination_city,
         departure_date=user_input.start_date.isoformat(),
         return_date=user_input.return_date.isoformat(),
         budget_allocation=state.budget_allocation,
@@ -96,6 +175,7 @@ async def search_agent_node(state: TripState) -> dict:
         "search_results": results,
         "search_errors": errors,
         "conflicts": state.conflicts + conflicts,
+        "chosen_destination": chosen_destination,
     }
     if conflicts:
         # Routing keys off clarification_needed, NOT the cumulative
@@ -130,9 +210,10 @@ def clarify_after_search_node(state: TripState) -> dict:
 
 async def ranking_agent_node(state: TripState) -> dict:
     user_input = state.user_input
+    destination_city = state.chosen_destination or user_input.destination
     reference_location = None
-    if user_input.destination:
-        reference_location = await resolve_city_center(user_input.destination)
+    if destination_city:
+        reference_location = await resolve_city_center(destination_city)
 
     ranked = rank_search_results(
         state.search_results,
@@ -145,11 +226,12 @@ async def ranking_agent_node(state: TripState) -> dict:
 
 def itinerary_agent_node(state: TripState) -> dict:
     user_input = state.user_input
+    destination_city = state.chosen_destination or user_input.destination
     days, conflicts = compose_itinerary(
         state.ranked_shortlist,
         state.budget_allocation,
         user_input.duration_days,
-        user_input.destination or "your destination",
+        destination_city or "your destination",
     )
     update = {"itinerary": days, "conflicts": state.conflicts + conflicts}
     if conflicts:
