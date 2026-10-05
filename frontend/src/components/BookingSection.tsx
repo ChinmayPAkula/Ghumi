@@ -2,6 +2,7 @@ import { useState, type FormEvent } from 'react'
 import {
   bookFlight,
   bookHotel,
+  BookingApiError,
   ValidationApiError,
   type BookingResult,
   type FieldError,
@@ -90,8 +91,10 @@ function FlightBookingForm({ runId }: { runId: string }) {
           mapped[String(fe.loc[fe.loc.length - 1])] = fe.msg.replace(/^Value error, /, '')
         })
         setFieldErrors(mapped)
+      } else if (err instanceof BookingApiError) {
+        setFieldErrors({ _general: err.message })
       } else {
-        setFieldErrors({ _general: 'Could not reach the booking service.' })
+        setFieldErrors({ _general: 'Something unexpected went wrong. Please try again.' })
       }
     } finally {
       setSubmitting(false)
@@ -203,8 +206,10 @@ function HotelBookingForm({ runId }: { runId: string }) {
           mapped[String(fe.loc[fe.loc.length - 1])] = fe.msg.replace(/^Value error, /, '')
         })
         setFieldErrors(mapped)
+      } else if (err instanceof BookingApiError) {
+        setFieldErrors({ _general: err.message })
       } else {
-        setFieldErrors({ _general: 'Could not reach the booking service.' })
+        setFieldErrors({ _general: 'Something unexpected went wrong. Please try again.' })
       }
     } finally {
       setSubmitting(false)

@@ -159,19 +159,50 @@ export interface BookingResult {
   error_message: string | null
 }
 
+/**
+ * Thrown by postBooking on a non-422 HTTP failure -- carries the status
+ * code so the UI can tell "this run expired" (404, e.g. the backend
+ * redeployed and lost its in-memory run state) or "too many attempts,
+ * wait a minute" (429) apart from an actual network/server problem,
+ * instead of lumping everything into one generic "could not reach the
+ * server" message that's misleading for what's really a stale run_id.
+ */
+export class BookingApiError extends Error {
+  status: number
+  constructor(status: number, message: string) {
+    super(message)
+    this.status = status
+  }
+}
+
 async function postBooking<T>(path: string, payload: T): Promise<BookingResult> {
-  const res = await fetch(`${API_BASE_URL}${path}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  })
+  let res: Response
+  try {
+    res = await fetch(`${API_BASE_URL}${path}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    })
+  } catch {
+    throw new BookingApiError(0, 'Could not reach the server. Check your connection and try again.')
+  }
+
   if (res.status === 422) {
     const body = await res.json().catch(() => null)
     const detail = Array.isArray(body?.detail) ? (body.detail as FieldError[]) : []
     throw new ValidationApiError(detail)
   }
+  if (res.status === 404) {
+    throw new BookingApiError(404, 'This plan has expired. Please plan your trip again before booking.')
+  }
+  if (res.status === 409) {
+    throw new BookingApiError(409, 'This trip is still being finalized — try again in a moment.')
+  }
+  if (res.status === 429) {
+    throw new BookingApiError(429, 'Too many booking attempts — wait a minute and try again.')
+  }
   if (!res.ok) {
-    throw new Error(`API error ${res.status}: ${await res.text()}`)
+    throw new BookingApiError(res.status, `Booking failed (error ${res.status}). Please try again.`)
   }
   return res.json()
 }
