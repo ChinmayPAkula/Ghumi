@@ -92,6 +92,13 @@ export default function LandingPage() {
           Plan now
         </Link>
 
+        <Link
+          to="/trips"
+          className="relative z-10 mt-4 font-mono text-[11px] tracking-wider uppercase text-paper/70 hover:text-paper transition-colors underline underline-offset-4"
+        >
+          My trips
+        </Link>
+
         <div className="absolute bottom-7 left-1/2 -translate-x-1/2 font-mono text-[10px] tracking-widest text-paper/60 uppercase">
           scroll ↓
         </div>
