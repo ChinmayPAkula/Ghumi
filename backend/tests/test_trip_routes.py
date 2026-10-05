@@ -195,3 +195,28 @@ def test_resume_already_completed_run_returns_404():
 
     response = client.post(f"/api/trip/plan/{run_id}/resume", json={"choice": "ack"})
     assert response.status_code == 404
+
+
+def test_plan_endpoint_is_rate_limited():
+    """
+    Proves rate limiting actually blocks excess requests, rather than just
+    trusting the decorator is wired correctly. Re-enables the limiter
+    (disabled everywhere else by conftest.py's autouse fixture) just for
+    this one test, and resets its counter afterward so it doesn't bleed
+    into other tests.
+    """
+    from app.core.rate_limit import limiter
+
+    limiter.enabled = True
+    try:
+        limiter.reset()
+        patches = _patch_agents()
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6]:
+            responses = [client.post("/api/trip/plan", json=_plan_payload()) for _ in range(6)]
+    finally:
+        limiter.reset()
+        limiter.enabled = False
+
+    statuses = [r.status_code for r in responses]
+    assert statuses.count(200) == 5  # the configured 5/minute limit
+    assert statuses.count(429) == 1  # the 6th request gets blocked

@@ -10,11 +10,12 @@ TechStack.docx §3.1's "no task queue for v1" decision.
 from typing import Literal, Optional
 from uuid import uuid4
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from langgraph.types import Command
 from pydantic import BaseModel
 
 from app.agents.orchestrator import get_compiled_graph
+from app.core.rate_limit import limiter
 from app.schemas.trip_state import Conflict, DayPlan, TripState, UserInput
 
 router = APIRouter(prefix="/trip", tags=["trip"])
@@ -82,13 +83,18 @@ def _build_plan_result(run_id: str, graph_output: dict) -> PlanResult:
 
 
 @router.post("/plan", response_model=PlanResult)
-async def plan_trip(payload: UserInput) -> PlanResult:
+@limiter.limit("5/minute")
+async def plan_trip(request: Request, payload: UserInput) -> PlanResult:
     """
     Runs the full orchestrator graph (budget -> search -> ranking ->
     itinerary) for one trip. May come back as status="needs_clarification"
     if a budget conflict was found (see orchestrator.py's checkpointed
     interrupts) -- resume via POST /plan/{run_id}/resume with the user's
     chosen resolution_option.
+
+    Rate-limited (5/min per IP, see app/core/rate_limit.py) -- this
+    endpoint fans out to Duffel, LiteAPI, Google Places, and Groq per
+    call, all against real quota/cost once this is publicly reachable.
     """
     run_id = str(uuid4())
     initial_state = TripState(run_id=run_id, user_input=payload)
@@ -100,13 +106,18 @@ async def plan_trip(payload: UserInput) -> PlanResult:
 
 
 @router.post("/plan/{run_id}/resume", response_model=PlanResult)
-async def resume_trip(run_id: str, payload: ResumePayload) -> PlanResult:
+@limiter.limit("10/minute")
+async def resume_trip(request: Request, run_id: str, payload: ResumePayload) -> PlanResult:
     """
     Resumes a paused run. First-pass scope (see orchestrator.py's module
     docstring): resuming acknowledges the conflict and continues with
     whatever was already selected -- it does not yet renegotiate budget
     or propose alternatives (that's PRD Phase 2's "conflict-aware
     replanning"). A run_id from a completed or unknown run 404s.
+
+    Rate-limited (10/min per IP) -- lighter than /plan (resumes an
+    existing graph state rather than starting a full new search), but
+    still calls ranking_agent + Groq's narrative generation.
     """
     config = {"configurable": {"thread_id": run_id}}
     graph = get_compiled_graph()
