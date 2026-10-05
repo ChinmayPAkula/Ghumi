@@ -1,1 +1,4 @@
+# Railway start command (Root Directory for this service must be set to
+# "backend" in Railway's dashboard Settings -> Source -> Root Directory,
+# since this is a single repo with both backend/ and frontend/).
 web: uvicorn app.main:app --host 0.0.0.0 --port $PORT
